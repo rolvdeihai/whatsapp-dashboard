@@ -185,9 +185,9 @@ class BotManager {
       this.initializeWithStability();
     }, 3000);
 
-    setTimeout(() => {
-      this.checkAndCleanCorruptedSessions();
-    }, 15000);
+    // setTimeout(() => {
+    //   this.checkAndCleanCorruptedSessions();
+    // }, 15000);
 
     // Start monitoring
     setTimeout(() => {
