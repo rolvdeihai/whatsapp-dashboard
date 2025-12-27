@@ -1,5 +1,4 @@
-// whatsapp-bot-dashboard/backend/src/index.js
-
+// backend/src/index.js - FIXED CORS VERSION
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -9,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import BotManager from './botManager.js';
 
-// === Global error handlers (very important for debugging crashes) ===
+// === Global error handlers ===
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason && reason.stack ? reason.stack : reason);
 });
@@ -25,45 +24,108 @@ dotenv.config();
 const app = express();
 const server = createServer(app);
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
+// 🚀 CORS configuration dengan wildcard untuk development
+const allowedOrigins = [
+  "https://baby-ai.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5173", // Vite dev server
+  "http://127.0.0.1:3000",
+  /\.vercel\.app$/, // Semua subdomain Vercel
+  /\.ngrok-free\.app$/, // Semua ngrok domain
+  /\.ngrok\.io$/,
+  /\.ngrok-free\.dev$/
+];
 
-    if (origin === "https://baby-ai.vercel.app") return callback(null, true);
-
-    if (origin === "http://localhost:3000") return callback(null, true);
-
-    if (/^https:\/\/[a-zA-Z0-9-]+-jethro-elijah-lims-projects\.vercel\.app$/.test(origin))
-      return callback(null, true);
-
-    if (/^https:\/\/.*\.ngrok-free\.dev$/.test(origin)) return callback(null, true);
-
-    return callback(new Error("CORS blocked: " + origin));
-  },
-  credentials: true,
-  methods: ["GET", "POST"],
+// 🚀 Simple CORS middleware untuk development
+const corsMiddleware = (req, res, next) => {
+  const origin = req.headers.origin;
+  
+  if (!origin) {
+    return next();
+  }
+  
+  // Check if origin is allowed
+  const isAllowed = allowedOrigins.some(allowedOrigin => {
+    if (typeof allowedOrigin === 'string') {
+      return origin === allowedOrigin;
+    } else if (allowedOrigin instanceof RegExp) {
+      return allowedOrigin.test(origin);
+    }
+    return false;
+  });
+  
+  if (isAllowed) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, ngrok-skip-browser-warning');
+    
+    // Handle preflight
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
+  }
+  
+  next();
 };
 
-app.use(cors(corsOptions));
+// Apply CORS middleware
+app.use(corsMiddleware);
 
+// 🚀 Body parser middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// 🚀 Socket.io configuration
 const io = new Server(server, {
   cors: {
-    origin: corsOptions.origin,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      
+      const isAllowed = allowedOrigins.some(allowedOrigin => {
+        if (typeof allowedOrigin === 'string') {
+          return origin === allowedOrigin;
+        } else if (allowedOrigin instanceof RegExp) {
+          return allowedOrigin.test(origin);
+        }
+        return false;
+      });
+      
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        console.log('Socket.io CORS blocked origin:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
     methods: ["GET", "POST"],
-    credentials: true
-  }
+    allowedHeaders: ["Content-Type", "Authorization", "ngrok-skip-browser-warning"]
+  },
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  connectTimeout: 45000,
+  allowEIO3: true,
+  serveClient: false
 });
-
-// 🚀 CRITICAL FIX: Add JSON body parser middleware
-app.use(express.json());
 
 const botManager = new BotManager();
 
-// API Routes (no userId needed)
-// 🚀 SIMPLIFIED: Quick groups endpoint
+// 🚀 Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    botStatus: botManager.getBotStatus(),
+    version: '1.0.0'
+  });
+});
+
+// 🚀 API Routes
 app.get('/api/groups', async (req, res) => {
   try {
-    console.log(`[${new Date().toISOString()}] GET /api/groups (quick)`);
+    console.log(`[${new Date().toISOString()}] GET /api/groups`);
     const groups = await botManager.getGroups();
     return res.json(groups);
   } catch (error) {
@@ -72,7 +134,6 @@ app.get('/api/groups', async (req, res) => {
   }
 });
 
-// 🚀 NEW: Search groups endpoint
 app.get('/api/groups/search', async (req, res) => {
   try {
     const { q } = req.query;
@@ -90,7 +151,6 @@ app.get('/api/groups/search', async (req, res) => {
   }
 });
 
-// 🚀 NEW: Get saved groups only
 app.post('/api/groups/saved', async (req, res) => {
   try {
     const { groupIds } = req.body;
@@ -108,7 +168,6 @@ app.post('/api/groups/saved', async (req, res) => {
   }
 });
 
-// Keep your existing active-groups endpoint
 app.post('/api/active-groups', async (req, res) => {
   try {
     const { groups } = req.body;
@@ -123,23 +182,75 @@ app.post('/api/active-groups', async (req, res) => {
 
 app.get('/api/bot-status', (req, res) => {
   console.log('Checking bot status for admin bot');
-  const status = botManager.getBotStatus();
-  res.json({ status });
+  const status = botManager.getFullStatus();
+  res.json(status);
 });
 
-// Serve React app for non-API routes
-app.get(/^(?!\/api).*/, (req, res) => {
-  console.log(`Serving React app for route: ${req.originalUrl}`);
+app.post('/api/force-qr', async (req, res) => {
+  try {
+    console.log('Force QR via API');
+    const result = await botManager.forceQRGeneration();
+    res.json({ success: result });
+  } catch (error) {
+    console.error('Error forcing QR:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🚀 Endpoint untuk lock/unlock endpoint
+app.post('/api/endpoint/lock', (req, res) => {
+  try {
+    const { locked } = req.body;
+    const result = botManager.setEndpointLock(locked === true);
+    res.json(result);
+  } catch (error) {
+    console.error('Error setting endpoint lock:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/endpoint/lock-status', (req, res) => {
+  try {
+    const status = botManager.getEndpointLockStatus();
+    res.json(status);
+  } catch (error) {
+    console.error('Error getting endpoint lock status:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// 🚀 Serve React app untuk production
+app.use(express.static(path.join(__dirname, '../../build')));
+
+app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../../build', 'index.html'));
 });
 
-// Socket.io for real-time communication
-// In your socket.io connection handler in index.js:
+// 🚀 Socket.io events
 io.on('connection', (socket) => {
-  console.log('Admin client connected:', socket.id);
+  console.log('🔌 Admin client connected:', socket.id);
   
   // Add socket to bot manager
   botManager.addSocketConnection(socket);
+  
+  // 🚀 Send immediate status update
+  socket.emit('bot-status', {
+    status: botManager.getBotStatus(),
+    qrCode: botManager.currentQrCode,
+    fullStatus: botManager.getFullStatus()
+  });
+  
+  socket.emit('active-groups-updated', { 
+    groups: botManager.activeGroups 
+  });
+  
+  // 🚀 Heartbeat system
+  socket.on('heartbeat', (data) => {
+    socket.emit('heartbeat-response', { 
+      timestamp: Date.now(),
+      serverTime: new Date().toISOString()
+    });
+  });
   
   socket.on('start-bot', async () => {
     console.log('Manual bot start requested');
@@ -151,30 +262,33 @@ io.on('connection', (socket) => {
     botManager.stopBot();
   });
   
-  // 🆕 NEW: Force QR generation
-  socket.on('force-qr', () => {
+  socket.on('force-qr', async () => {
     console.log('Force QR requested by client');
-    botManager.forceQRGeneration();
+    await botManager.forceQRGeneration();
   });
   
-  // 🆕 NEW: Retry session restoration
-  socket.on('retry-session', () => {
+  socket.on('retry-session', async () => {
     console.log('Session retry requested by client');
-    botManager.initializeBot(); // This will trigger session restoration again
+    await botManager.initializeBot();
   });
   
-  socket.on('disconnect', () => {
-    console.log('Admin client disconnected:', socket.id);
-    botManager.removeSocketConnection(socket);
-  });
-
   socket.on('force-retry', async () => {
     console.log('Force retry connection requested by client');
-    await botManager.forceRetryConnection();
+    await botManager.forceQRGeneration();
+  });
+  
+  socket.on('disconnect', (reason) => {
+    console.log('🔌 Admin client disconnected:', socket.id, 'Reason:', reason);
+    botManager.removeSocketConnection(socket);
+  });
+  
+  socket.on('error', (error) => {
+    console.error('Socket error:', socket.id, error);
   });
 });
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🌐 CORS enabled for: ${allowedOrigins.map(o => o.toString()).join(', ')}`);
 });
