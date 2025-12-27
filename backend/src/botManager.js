@@ -1,4 +1,4 @@
-// backend/src/botManager.js - FIXED REMOTEAUTH VERSION
+// backend/src/botManager.js - VERSION ASLI TANPA GITHUB ACTIONS MODE
 import pkg from 'whatsapp-web.js';
 const { Client, RemoteAuth } = pkg;
 import QRCode from 'qrcode';
@@ -35,31 +35,6 @@ process.on('uncaughtException', (error) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Define backend endpoints configuration
-const BACKEND_ENDPOINTS = [
-  {
-    name: 'Primary Server',
-    url: process.env.API_ENDPOINT_PRIMARY || process.env.API_ENDPOINT,
-    priority: 1,
-    maxConcurrent: 5,
-    enabled: true
-  },
-  {
-    name: 'Secondary Server',
-    url: process.env.API_ENDPOINT_SECONDARY,
-    priority: 2,
-    maxConcurrent: 5,
-    enabled: !!process.env.API_ENDPOINT_SECONDARY
-  },
-  {
-    name: 'Backup Server',
-    url: process.env.API_ENDPOINT_BACKUP,
-    priority: 3,
-    maxConcurrent: 3,
-    enabled: !!process.env.API_ENDPOINT_BACKUP
-  }
-].filter(endpoint => endpoint.enabled);
-
 class BotManager {
   constructor() {
     this.client = null;
@@ -70,57 +45,16 @@ class BotManager {
     
     // Session recovery settings
     this.sessionRecovery = {
-      maxRetries: 5,
+      maxRetries: 3,
       currentRetries: 0,
       retryDelay: 5000,
-      backoffFactor: 2,
       maxSessionAge: 24 * 60 * 60 * 1000,
-      lastSessionTime: null,
-      recoveryInProgress: false
+      lastSessionTime: null
     };
     
     this.supabaseStore = null;
-
-    this.clientConfig = {
-      authStrategy: null,
-      puppeteer: {
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu',
-          '--single-process',
-          '--max_old_space_size=512',
-          '--disable-features=AudioServiceOutOfProcess'
-        ],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
-      },
-      takeoverOnConflict: true,
-      restartOnAuthFail: true,
-      qrMaxRetries: 5
-    };
-
-    // 🚀 Connection stability
-    this.connectionStability = {
-      lastStableConnection: null,
-      connectionAttempts: 0,
-      maxConnectionAttempts: 10,
-      shouldSlowDown: false,
-      cooldownUntil: 0
-    };
     
-    // Backend endpoints management
-    this.backendEndpoints = BACKEND_ENDPOINTS;
-    this.activeEndpoint = null;
-    this.endpointStatuses = [];
-    this.lastEndpointCheck = 0;
-    this.endpointCheckInterval = 30000; // 30 seconds
-    
-    // Paths
+    // Paths biasa, gak ada mode GitHub Actions
     this.authPath = process.env.NODE_ENV === 'production' 
       ? path.join('/tmp/whatsapp_auth')
       : path.join(__dirname, '../auth');
@@ -155,22 +89,10 @@ class BotManager {
     this.maxCachedGroups = 5;
     this.maxCachedMessages = 30;
 
-    // Endpoint failure tracking
-    this.endpointFailures = new Map();
-    this.maxConsecutiveFailures = 3;
-    this.endpointCooldownTime = 60000; // 1 minute
-
     this.sessionRetryAttempts = 0;
     this.maxSessionRetries = 3;
     this.isWaitingForSession = false;
     this.forceQR = false;
-
-    // Endpoint lock system
-    this.endpointLocked = false;
-    this.endpointLockStartTime = 0;
-    this.endpointLockDuration = 5 * 60 * 1000; // 5 minutes
-    this.endpointChangeCount = 0;
-    this.maxEndpointChanges = 3;
 
     // Supabase storage monitoring
     this.supabaseMonitor = {
@@ -180,15 +102,6 @@ class BotManager {
       minPurgeInterval: 30 * 60 * 1000,
     };
 
-    // Delay startup untuk pastikan semua service ready
-    setTimeout(() => {
-      this.initializeWithStability();
-    }, 3000);
-
-    setTimeout(() => {
-      this.checkAndCleanCorruptedSessions();
-    }, 15000);
-
     // Start monitoring
     setTimeout(() => {
       this.startSupabaseMonitoring();
@@ -196,57 +109,9 @@ class BotManager {
     
     this.startMemoryMonitoring();
     this.loadActiveGroupsFromSupabase();
-    
-    // Start endpoint monitoring
-    this.startEndpointMonitoring();
+    this.initializeBot();
   }
 
-  // 🚀 Initialize with stability checks
-  async initializeWithStability() {
-    const now = Date.now();
-    
-    // Check if we should slow down (too many attempts)
-    if (this.connectionStability.shouldSlowDown) {
-      if (now < this.connectionStability.cooldownUntil) {
-        const waitTime = Math.ceil((this.connectionStability.cooldownUntil - now) / 1000);
-        console.log(`⏳ Cooling down... Too many connection attempts. Waiting ${waitTime} seconds`);
-        
-        this.emitToAllSockets('bot-status', {
-          status: 'cooldown',
-          waitTime,
-          message: 'Too many connection attempts, cooling down...'
-        });
-        
-        return;
-      } else {
-        this.connectionStability.shouldSlowDown = false;
-        this.connectionStability.connectionAttempts = 0;
-      }
-    }
-    
-    // Track connection attempts
-    this.connectionStability.connectionAttempts++;
-    
-    if (this.connectionStability.connectionAttempts > this.connectionStability.maxConnectionAttempts) {
-      console.log('⚠️ Too many connection attempts, entering cooldown mode');
-      this.connectionStability.shouldSlowDown = true;
-      this.connectionStability.cooldownUntil = now + (5 * 60 * 1000); // 5 minutes cooldown
-      
-      this.emitToAllSockets('bot-status', {
-        status: 'cooldown',
-        waitTime: 300,
-        message: 'Too many connection attempts. System cooling down for 5 minutes.'
-      });
-      
-      return;
-    }
-    
-    console.log(`🔄 Connection attempt ${this.connectionStability.connectionAttempts}/${this.connectionStability.maxConnectionAttempts}`);
-    
-    await this.initializeBot();
-  }
-
-  // Supabase monitoring
   startSupabaseMonitoring() {
     setInterval(async () => {
       await this.checkSupabaseStorage();
@@ -257,17 +122,29 @@ class BotManager {
     }, 60000);
   }
 
-  // Endpoint monitoring system
-  startEndpointMonitoring() {
-    // Initial check
-    setTimeout(() => {
-      this.checkAndSelectBestEndpoint();
-    }, 5000);
-    
-    // Periodic checks
-    setInterval(() => {
-      this.checkAndSelectBestEndpoint();
-    }, this.endpointCheckInterval);
+  async checkSupabaseStorage() {
+    try {
+      const now = Date.now();
+      if (now - this.supabaseMonitor.lastPurgeTime < this.supabaseMonitor.minPurgeInterval) {
+        return;
+      }
+
+      if (this.supabaseStore) {
+        const stats = await this.supabaseStore.getStorageStats();
+        console.log(`📊 Supabase session storage: ${stats.sessionsCount} sessions, ${stats.totalSizeMB}MB`);
+        
+        // Clean up sessions older than 7 days
+        if (stats.sessionsCount > 5) {
+          const cleaned = await this.supabaseStore.cleanupOldSessions(7 * 24);
+          if (cleaned > 0) {
+            console.log(`🧹 Cleaned ${cleaned} old sessions from Supabase`);
+            this.supabaseMonitor.lastPurgeTime = Date.now();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error checking Supabase storage:', error);
+    }
   }
 
   ensureDirectoryExists(dirPath) {
@@ -321,317 +198,10 @@ class BotManager {
     }
   }
 
-  // Check endpoint status
-  async checkEndpointStatus(endpoint) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      
-      const startTime = performance.now();
-      const response = await fetch(`${endpoint.url}/queue-status`, {
-        signal: controller.signal
-      });
-      const latency = performance.now() - startTime;
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      
-      console.log(`${endpoint.name}: ${data.active}/${data.max_concurrent} active, ${data.queued} queued, ${latency.toFixed(0)}ms latency`);
-      
-      // Reset failure count on success
-      this.endpointFailures.delete(endpoint.name);
-      
-      return {
-        ...endpoint,
-        active: data.active,
-        queued: data.queued,
-        max: data.max_concurrent,
-        available: data.active < data.max_concurrent,
-        latency: latency,
-        success: true,
-        lastChecked: Date.now()
-      };
-    } catch (error) {
-      console.log(`${endpoint.name}: Unavailable - ${error.message}`);
-      
-      const failures = this.endpointFailures.get(endpoint.name) || 0;
-      this.endpointFailures.set(endpoint.name, failures + 1);
-      
-      return {
-        ...endpoint,
-        available: false,
-        error: error.message,
-        latency: Number.MAX_SAFE_INTEGER,
-        success: false,
-        lastChecked: Date.now(),
-        consecutiveFailures: failures + 1
-      };
-    }
-  }
-
-  // Get best available endpoint with intelligent selection
-  async getBestEndpoint() {
-    try {
-      // 🔒 Check if endpoint is locked
-      if (this.endpointLocked && this.activeEndpoint) {
-        const lockAge = Date.now() - this.endpointLockStartTime;
-        
-        // If lock is still valid, keep current endpoint
-        if (lockAge < this.endpointLockDuration) {
-          console.log(`🔒 Endpoint locked: ${this.activeEndpoint.name} (lock expires in ${Math.round((this.endpointLockDuration - lockAge) / 1000)}s)`);
-          
-          const status = await this.checkEndpointStatus(this.activeEndpoint);
-          this.endpointStatuses = [status];
-          this.emitToAllSockets('endpoint-status', {
-            endpoints: this.endpointStatuses,
-            activeEndpoint: this.activeEndpoint,
-            locked: this.endpointLocked,
-            changesRemaining: Math.max(0, this.maxEndpointChanges - this.endpointChangeCount)
-          });
-          
-          return this.activeEndpoint;
-        } else {
-          console.log('🔓 Endpoint lock expired');
-          this.endpointLocked = false;
-          this.endpointChangeCount = 0;
-        }
-      }
-      
-      // 🔒 If too many endpoint changes recently, lock for stability
-      if (this.endpointChangeCount >= this.maxEndpointChanges) {
-        console.log('⚠️ Too many endpoint changes, locking for stability');
-        this.endpointLocked = true;
-        this.endpointLockStartTime = Date.now();
-        return this.activeEndpoint;
-      }
-      
-      console.log('Checking endpoint statuses...');
-      const statuses = await Promise.all(
-        this.backendEndpoints.map(endpoint => this.checkEndpointStatus(endpoint))
-      );
-      
-      this.endpointStatuses = statuses;
-      
-      const available = statuses.filter(s => {
-        const failures = this.endpointFailures.get(s.name) || 0;
-        const isInCooldown = s.lastChecked && 
-          (Date.now() - s.lastChecked < this.endpointCooldownTime) && 
-          failures >= this.maxConsecutiveFailures;
-        
-        return s.available && !isInCooldown;
-      });
-      
-      // Log status
-      statuses.forEach(status => {
-        const failures = this.endpointFailures.get(status.name) || 0;
-        if (status.available && failures < this.maxConsecutiveFailures) {
-          console.log(`✅ ${status.name}: Available (${status.active}/${status.max} active, ${status.latency.toFixed(0)}ms)`);
-        } else {
-          console.log(`❌ ${status.name}: Unavailable - ${status.error || 'Too many failures'}`);
-        }
-      });
-      
-      // Find available endpoints
-      if (available.length === 0) {
-        console.log('No endpoints available, using fallback to first server');
-        const fallback = this.backendEndpoints[0];
-        this.activeEndpoint = fallback;
-        return fallback;
-      }
-
-      // Intelligent selection with stability preference
-      const bestEndpoint = available.sort((a, b) => {
-        // 1. Prefer current endpoint if available (STABILITY)
-        if (this.activeEndpoint) {
-          if (a.url === this.activeEndpoint.url && a.available) return -1;
-          if (b.url === this.activeEndpoint.url && b.available) return 1;
-        }
-        
-        // 2. Then by health metrics
-        if (a.active !== b.active) return a.active - b.active;
-        if (a.queued !== b.queued) return a.queued - b.queued;
-        if (a.latency !== b.latency) return a.latency - b.latency;
-        return a.priority - b.priority;
-      })[0];
-      
-      // Track endpoint changes
-      if (!this.activeEndpoint || this.activeEndpoint.url !== bestEndpoint.url) {
-        this.endpointChangeCount++;
-        console.log(`🔄 Endpoint change #${this.endpointChangeCount}/${this.maxEndpointChanges}: ${bestEndpoint.name}`);
-      }
-      
-      console.log(`🎯 Selected endpoint: ${bestEndpoint.name} (${bestEndpoint.active} active, ${bestEndpoint.queued} queued, ${bestEndpoint.latency.toFixed(0)}ms)`);
-      this.activeEndpoint = bestEndpoint;
-      
-      // Emit status
-      this.emitToAllSockets('endpoint-status', { 
-        endpoints: statuses,
-        activeEndpoint: this.activeEndpoint,
-        locked: this.endpointLocked,
-        changesRemaining: Math.max(0, this.maxEndpointChanges - this.endpointChangeCount)
-      });
-      
-      return bestEndpoint;
-      
-    } catch (error) {
-      console.error('Endpoint selection error:', error);
-      return this.activeEndpoint || this.backendEndpoints[0];
-    }
-  }
-
-  // Check and select best endpoint
-  async checkAndSelectBestEndpoint() {
-    try {
-      // If bot is connecting or connected, be conservative
-      if (this.client && (this.isInitializing || this.client.info)) {
-        console.log('Bot is active, using conservative endpoint check...');
-        // Only check current endpoint health
-        if (this.activeEndpoint) {
-          await this.checkEndpointStatus(this.activeEndpoint);
-        }
-        return;
-      }
-      
-      // Only do full check periodically
-      const timeSinceLastCheck = Date.now() - this.lastEndpointCheck;
-      if (timeSinceLastCheck < 60000) {
-        return;
-      }
-      
-      await this.getBestEndpoint();
-      this.lastEndpointCheck = Date.now();
-      
-    } catch (error) {
-      console.error('Error in endpoint check:', error);
-    }
-  }
-
-  // Make API call with endpoint selection
-  // Dalam botManager.js - versi yang diperbaiki
-  async makeApiCall(endpointPath, payload, isSearch = false) {
-    try {
-      const apiUrl = process.env.API_ENDPOINT;
-      if (!apiUrl) {
-        console.error('API_ENDPOINT environment variable not set');
-        throw new Error('API endpoint not configured');
-      }
-      
-      const fullUrl = `${apiUrl}${endpointPath}`;
-      console.log(`[API] Calling: ${fullUrl}`);
-      
-      const response = await axios.post(
-        fullUrl,
-        payload,
-        {
-          timeout: 10 * 60 * 1000,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-      
-      return response.data;
-      
-    } catch (error) {
-      console.error('API call failed:', error.message);
-      throw error;
-    }
-  }
-
-  // Dalam botManager.js - tambahkan method untuk membersihkan session korup
-  async checkAndCleanCorruptedSessions() {
-    try {
-      if (!this.supabaseStore) {
-        this.supabaseStore = new SupabaseRemoteAuthStore('admin');
-      }
-      
-      const sessions = await this.supabaseStore.list();
-      console.log(`🔍 Checking ${sessions.length} sessions for corruption...`);
-      
-      for (const session of sessions) {
-        const sessionId = session.id.replace('admin-', '');
-        const hasValidSession = await this.supabaseStore.sessionExists(sessionId);
-        
-        if (!hasValidSession) {
-          console.log(`🧹 Deleting corrupted session: ${sessionId}`);
-          await this.supabaseStore.delete({ session: sessionId });
-        }
-      }
-    } catch (error) {
-      console.error('Error checking for corrupted sessions:', error);
-    }
-  }
-
-  async getNextAvailableEndpoint(currentEndpoint) {
-    const statuses = this.endpointStatuses.length > 0 
-      ? this.endpointStatuses 
-      : await Promise.all(this.backendEndpoints.map(e => this.checkEndpointStatus(e)));
-    
-    const available = statuses.filter(s => {
-      if (s.name === currentEndpoint.name) return false;
-      
-      const failures = this.endpointFailures.get(s.name) || 0;
-      const isInCooldown = s.lastChecked && 
-        (Date.now() - s.lastChecked < this.endpointCooldownTime) && 
-        failures >= this.maxConsecutiveFailures;
-      
-      return s.available && !isInCooldown;
-    });
-    
-    if (available.length === 0) {
-      return null;
-    }
-    
-    return available.sort((a, b) => {
-      if (a.active !== b.active) return a.active - b.active;
-      if (a.queued !== b.queued) return a.queued - b.queued;
-      if (a.latency !== b.latency) return a.latency - b.latency;
-      return a.priority - b.priority;
-    })[0];
-  }
-
-  async checkSupabaseStorage() {
-    try {
-      const now = Date.now();
-      if (now - this.supabaseMonitor.lastPurgeTime < this.supabaseMonitor.minPurgeInterval) {
-        return;
-      }
-
-      if (this.supabaseStore) {
-        const stats = await this.supabaseStore.getStorageStats();
-        console.log(`📊 Supabase session storage: ${stats.sessionsCount} sessions, ${stats.totalSizeMB}MB`);
-        
-        if (stats.sessionsCount > 5) {
-          const cleaned = await this.supabaseStore.cleanupOldSessions(7 * 24);
-          if (cleaned > 0) {
-            console.log(`🧹 Cleaned ${cleaned} old sessions from Supabase`);
-            this.supabaseMonitor.lastPurgeTime = Date.now();
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error checking Supabase storage:', error);
-    }
-  }
-
   async shouldForceQR() {
-    // If we already have a client info, don't force QR
-    if (this.client && this.client.info) {
-      return false;
-    }
-    
     if (this.sessionRecovery.currentRetries >= this.sessionRecovery.maxRetries) {
       console.log(`🔄 Max session retries (${this.sessionRecovery.maxRetries}) exceeded, forcing QR`);
       return true;
-    }
-    
-    // Check if we have a valid session in Supabase
-    if (this.supabaseStore) {
-      const hasValidSession = await this.supabaseStore.sessionExists('RemoteAuth-admin');
-      if (!hasValidSession) {
-        console.log('🔄 No valid session in Supabase, QR will be required');
-        this.forceQR = false; // Reset to let normal flow happen
-      }
     }
     
     if (this.sessionRecovery.lastSessionTime) {
@@ -893,24 +463,18 @@ class BotManager {
     try {
       const waMessages = await chat.fetchMessages({ limit: 50 });
       const metadata = await chat.groupMetadata;
-      
-      // Add null check for metadata
-      if (!metadata) {
+      if (!metadata || !metadata.participants) {
         console.log(`[EXECUTE] No group metadata available.`);
-        await message.reply('Sorry, I cannot access group information. Please try again.');
         return;
       }
 
       const participantMap = new Map();
-      const participantsToProcess = metadata.participants ? metadata.participants.slice(0, 30) : [];
+      const participantsToProcess = metadata.participants.slice(0, 30);
       
       for (const participant of participantsToProcess) {
         try {
           const contact = await this.client.getContactById(participant.id);
-          const name = contact?.pushname || 
-                      contact?.verifiedName || 
-                      contact?.number || 
-                      participant.id._serialized.split('@')[0];
+          const name = contact.pushname || contact.verifiedName || contact.number || participant.id._serialized.split('@')[0];
           participantMap.set(participant.id._serialized, name);
         } catch (err) {
           participantMap.set(participant.id._serialized, participant.id._serialized.split('@')[0]);
@@ -921,12 +485,12 @@ class BotManager {
       for (const msg of waMessages) {
         if (!msg.body || msg.fromMe) continue;
         const senderId = msg.author || msg.from;
-        const userName = participantMap.get(senderId) || senderId?.split('@')[0] || 'Unknown';
+        const userName = participantMap.get(senderId) || senderId.split('@')[0];
         formattedMessages.push({
           timestamp: new Date(msg.timestamp * 1000).toISOString().slice(0, 19).replace('T', ' '),
           user: userName,
           message: msg.body.substring(0, 300),
-          group_name: chat.name || 'Unknown Group',
+          group_name: chat.name,
         });
       }
 
@@ -938,10 +502,7 @@ class BotManager {
 
       const contact = await message.getContact();
       const phoneNumber = (message.author || message.from).split('@')[0];
-      const displayName = contact?.pushname || 
-                        contact?.verifiedName || 
-                        contact?.number || 
-                        phoneNumber;
+      const displayName = contact.pushname || contact.verifiedName || contact.number || phoneNumber;
       const senderFormatted = `${phoneNumber} (${displayName})`;
 
       let response;
@@ -949,7 +510,7 @@ class BotManager {
         response = await this.callExternalAPISearch({
           messages: newMessages,
           prompt: prompt,
-          groupName: chat.name || 'Unknown Group',
+          groupName: chat.name,
           sender: senderFormatted,
           timestamp: new Date().toISOString(),
           totalMessageCount: currentMessages.length,
@@ -959,7 +520,7 @@ class BotManager {
         response = await this.callExternalAPI({
           messages: newMessages,
           prompt: prompt,
-          groupName: chat.name || 'Unknown Group',
+          groupName: chat.name,
           sender: senderFormatted,
           timestamp: new Date().toISOString(),
           totalMessageCount: currentMessages.length,
@@ -1010,6 +571,7 @@ class BotManager {
 
   getBotStatus() {
     if (this.client && this.client.info) return 'connected';
+    if (this.hasLocalSession()) return 'session_exists';
     return 'disconnected';
   }
 
@@ -1073,7 +635,7 @@ class BotManager {
         .eq('key', 'active_groups')
         .single();
 
-      if (error && error.code !== 'PGRST116') {
+      if (error && error.code !== 'PGRST116') { // PGRST116 = no rows
         console.error('Error loading active groups from Supabase:', error);
         return;
       }
@@ -1093,47 +655,37 @@ class BotManager {
     }
   }
 
-  // In botManager.js - fix for initializeBot() method
+  ensureAllDirectories() {
+    try {
+      this.ensureDirectoryExists(this.authPath);
+      console.log('✅ Main auth directory ensured');
+    } catch (error) {
+      console.error('❌ Error creating directories:', error);
+    }
+  }
+
   async initializeBot() {
     if (this.isInitializing) {
       console.log('Bot is already initializing...');
       return;
     }
-    
-    if (this.client && this.client.info) {
-      console.log('Bot is already connected');
-      return;
-    }
-    
     this.isInitializing = true;
-    
+
     try {
       console.log('🔄 Initializing bot with Supabase RemoteAuth...');
-      
+
       this.supabaseStore = new SupabaseRemoteAuthStore('admin');
       
-      // 🚀 NEW: Check if we have a valid session BEFORE initializing
-      const hasValidSession = await this.supabaseStore.sessionExists('RemoteAuth-admin');
-      
-      if (!hasValidSession) {
-        console.log('🔄 No valid session found, will require QR scan');
-        this.forceQR = false; // Let normal flow happen
-      } else {
-        console.log('✅ Valid session found, attempting to restore...');
-      }
-
       if (await this.shouldForceQR()) {
         console.log('🔄 Forcing QR generation due to session recovery');
         await this.clearSession();
       }
 
-      // Initialize client with RemoteAuth
       this.client = new Client({
         authStrategy: new RemoteAuth({
           clientId: 'admin',
           store: this.supabaseStore,
           backupSyncIntervalMs: 60000,
-          dataPath: this.authPath,
         }),
         puppeteer: {
           headless: true,
@@ -1150,9 +702,6 @@ class BotManager {
         },
         takeoverOnConflict: false,
         restartOnAuthFail: true,
-        puppeteerOptions: {
-          protocolTimeout: 60000, // Increased timeout for WhatsApp Web
-        }
       });
 
       this.setupClientEvents();
@@ -1224,12 +773,6 @@ class BotManager {
 
     this.client.on('ready', async () => {
       console.log('✅ Bot connected successfully with RemoteAuth');
-      
-      // 🔒 LOCK ENDPOINT when bot is connected
-      this.endpointLocked = true;
-      this.endpointLockStartTime = Date.now();
-      this.endpointChangeCount = 0;
-      
       this.emitToAllSockets('bot-status', { 
         status: 'connected',
         retryCount: this.sessionRecovery.currentRetries,
@@ -1271,38 +814,24 @@ class BotManager {
 
     this.client.on('disconnected', async (reason) => {
       console.log('🔌 Bot disconnected:', reason);
-      
-      // 🔓 UNLOCK endpoint when bot disconnects
-      this.endpointLocked = false;
-      this.endpointChangeCount = 0;
-      
       this.emitToAllSockets('bot-status', { 
         status: 'disconnected',
         reason: reason,
         retryCount: this.sessionRecovery.currentRetries,
         maxRetries: this.sessionRecovery.maxRetries
       });
-      
-      if (this.client) {
-        try {
-          await this.client.destroy();
-        } catch (e) {
-          console.log('Error destroying client:', e);
-        }
-        this.client = null;
-      }
-      
+      this.client = null;
       this.isProcessing = false;
-      this.currentProcessingRequest = null;
       
       this.groupsCache.data = [];
       this.groupsCache.lastUpdated = 0;
       this.processingQueue = [];
+      this.currentProcessingRequest = null;
       this.groupCaches.clear();
       
       setTimeout(async () => {
         console.log('🔄 Attempting to restore session via RemoteAuth...');
-        this.initializeWithStability();
+        this.initializeBot();
       }, 5000);
     });
 
@@ -1369,32 +898,65 @@ class BotManager {
     return commands.some(cmd => messageText.toLowerCase().includes(cmd));
   }
 
-  // In botManager.js - fix callExternalAPI method
   async callExternalAPI(payload) {
     const apiUrl = process.env.API_ENDPOINT;
-    if (!apiUrl) {
-      console.error('API_ENDPOINT environment variable not set');
-      return 'Sorry, API endpoint is not configured.';
-    }
-    
     const generateEndpoint = `${apiUrl}/generate_real_time`;
     
     console.log(`[API] Calling: ${generateEndpoint}`);
-    console.log(`[API] Sending ${payload.messages?.length || 0} messages`);
+    console.log(`[API] Sending ${payload.messages.length} messages`);
 
     try {
       const response = await axios.post(
         generateEndpoint,
         {
-          messages: payload.messages || [],
-          prompt: payload.prompt || '',
-          group_name: payload.groupName || 'Unknown Group',
-          sender: payload.sender || 'Unknown User',
-          timestamp: payload.timestamp || new Date().toISOString(),
+          messages: payload.messages,
+          prompt: payload.prompt,
+          group_name: payload.groupName,
           cache_info: {
-            total_messages: payload.totalMessageCount || 0,
-            new_messages: payload.newMessageCount || 0,
-            has_cached_context: (payload.totalMessageCount || 0) > (payload.newMessageCount || 0)
+            total_messages: payload.totalMessageCount,
+            new_messages: payload.newMessageCount,
+            has_cached_context: payload.totalMessageCount > payload.newMessageCount
+          }
+        },
+        {
+          timeout: 10 * 60 * 1000,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+
+      const data = response.data;
+      return (
+        data.response ||
+        data.answer ||
+        data.text ||
+        'I received your message but cannot generate a response right now.'
+      );
+
+    } catch (error) {
+      console.error('API call failed:', error.message);
+      return 'Sorry, there was an error processing your request. Please try again later.';
+    }
+  }
+
+  async callExternalAPISearch(payload) {
+    const apiUrl = process.env.API_ENDPOINT;
+    const generateEndpoint = `${apiUrl}/generate_realtime_search`;
+
+    console.log(`[API-SEARCH] Calling: ${generateEndpoint}`);
+
+    try {
+      const response = await axios.post(
+        generateEndpoint,
+        {
+          messages: payload.messages,
+          prompt: payload.prompt,
+          group_name: payload.groupName,
+          enable_search: true,
+          max_search_results: 3,
+          cache_info: {
+            total_messages: payload.totalMessageCount,
+            new_messages: payload.newMessageCount,
+            has_cached_context: payload.totalMessageCount > payload.newMessageCount
           }
         },
         {
@@ -1405,76 +967,20 @@ class BotManager {
 
       const data = response.data;
       
-      // SAFE response extraction
-      let responseText = 'I received your message but cannot generate a response right now.';
+      let responseText = data.response ||
+        data.answer ||
+        data.text ||
+        'I received your message but cannot generate a response right now.';
       
-      if (data) {
-        if (typeof data === 'string') {
-          responseText = data;
-        } else if (typeof data === 'object') {
-          responseText = data.response || 
-                        data.answer || 
-                        data.text || 
-                        data.message || 
-                        'I received your message but cannot generate a response right now.';
+      if (data.search_info && data.search_info.search_query) {
+        responseText += `\n\n*Search Info:* Queried "${data.search_info.search_query}"`;
+        if (data.search_info.articles_found) {
+          responseText += `, found ${data.search_info.articles_found} articles`;
         }
       }
       
-      console.log(`[API] Response received: ${responseText.substring(0, 100)}...`);
       return responseText;
 
-    } catch (error) {
-      console.error('API call failed:', error.message);
-      return 'Sorry, there was an error processing your request. Please try again later.';
-    }
-  }
-
-  // Similarly for callExternalAPISearch
-  async callExternalAPISearch(payload) {
-    try {
-      const data = await this.makeApiCall('/generate_realtime_search', {
-        messages: payload.messages,
-        prompt: payload.prompt,
-        group_name: payload.groupName || 'Unknown Group',
-        sender: payload.sender || 'Unknown User',
-        timestamp: payload.timestamp || new Date().toISOString(),
-        enable_search: true,
-        max_search_results: 3,
-        cache_info: {
-          total_messages: payload.totalMessageCount || 0,
-          new_messages: payload.newMessageCount || 0,
-          has_cached_context: (payload.totalMessageCount || 0) > (payload.newMessageCount || 0)
-        }
-      }, true);
-
-      // SAFE response extraction
-      let responseText = 'Sorry, I could not generate a search response.';
-      
-      if (data) {
-        if (typeof data === 'string') {
-          responseText = data;
-        } else if (typeof data === 'object') {
-          responseText = data.response || 
-                        data.answer || 
-                        data.text || 
-                        data.message || 
-                        'I received your search request but cannot generate a response right now.';
-          
-          // Safely add search info
-          if (data.search_info) {
-            const searchQuery = data.search_info.search_query || 'unknown query';
-            const articlesFound = data.search_info.articles_found || 0;
-            responseText += `\n\n*Search Info:* Queried "${searchQuery}"`;
-            if (articlesFound > 0) {
-              responseText += `, found ${articlesFound} articles`;
-            }
-          }
-        }
-      }
-      
-      console.log(`[API-SEARCH] Response received: ${responseText.substring(0, 100)}...`);
-      return responseText;
-      
     } catch (error) {
       console.error('Search API call failed:', error.message);
       return 'Sorry, the search request failed. Please try again later or use !ai for a faster response.';
@@ -1536,42 +1042,6 @@ class BotManager {
     }, 2000);
     
     return true;
-  }
-
-  // 🚀 Add method to manually lock/unlock endpoint
-  setEndpointLock(locked) {
-    this.endpointLocked = locked;
-    if (locked) {
-      this.endpointLockStartTime = Date.now();
-      this.endpointChangeCount = 0;
-    }
-    
-    console.log(`Endpoint lock ${locked ? 'enabled' : 'disabled'}`);
-    this.emitToAllSockets('endpoint-status', {
-      endpoints: this.endpointStatuses,
-      activeEndpoint: this.activeEndpoint,
-      locked: this.endpointLocked,
-      changesRemaining: Math.max(0, this.maxEndpointChanges - this.endpointChangeCount)
-    });
-    
-    return { success: true, locked };
-  }
-  
-  // 🚀 Add method to get endpoint lock status
-  getEndpointLockStatus() {
-    const lockAge = Date.now() - this.endpointLockStartTime;
-    const timeRemaining = Math.max(0, this.endpointLockDuration - lockAge);
-    
-    return {
-      locked: this.endpointLocked,
-      lockStartTime: this.endpointLockStartTime,
-      lockDuration: this.endpointLockDuration,
-      timeRemaining: timeRemaining,
-      changesCount: this.endpointChangeCount,
-      maxChanges: this.maxEndpointChanges,
-      changesRemaining: Math.max(0, this.maxEndpointChanges - this.endpointChangeCount),
-      activeEndpoint: this.activeEndpoint
-    };
   }
 
   async manualPurgeSessions(fullPurge = false) {
@@ -1650,12 +1120,6 @@ class BotManager {
       memoryUsage: {
         heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
-      },
-      endpoints: {
-        statuses: this.endpointStatuses,
-        active: this.activeEndpoint,
-        backendEndpoints: this.backendEndpoints,
-        locked: this.endpointLocked
       }
     };
   }
@@ -1672,11 +1136,6 @@ class BotManager {
     });
     
     this.emitToAllSockets('active-groups-updated', { groups: this.activeGroups });
-    this.emitToAllSockets('endpoint-status', { 
-      endpoints: this.endpointStatuses,
-      activeEndpoint: this.activeEndpoint,
-      locked: this.endpointLocked
-    });
   }
 
   removeSocketConnection(socket) {
