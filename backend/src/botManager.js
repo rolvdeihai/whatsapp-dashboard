@@ -129,8 +129,9 @@ class BotManager {
       ? '/tmp/group_cache'
       : path.join(__dirname, '../group_cache');
     
-    this.ensureDirectoryExists(this.authPath);
-    this.ensureDirectoryExists(this.cacheDir);
+    // this.ensureDirectoryExists(this.authPath);
+    // this.ensureDirectoryExists(this.cacheDir);
+    this.ensureAllDirectories();
 
     // Group caching
     this.groupsCache = {
@@ -269,6 +270,28 @@ class BotManager {
       this.checkAndSelectBestEndpoint();
     }, this.endpointCheckInterval);
   }
+
+  ensureAllDirectories() {
+    try {
+      // Create main auth directory
+      this.ensureDirectoryExists(this.authPath);
+      console.log(`✅ Main auth directory: ${this.authPath}`);
+      
+      // CRITICAL: Also create the temp directory structure RemoteAuth expects
+      const tempSessionPath = path.join(this.authPath, 'wwebjs_temp_session_admin');
+      this.ensureDirectoryExists(tempSessionPath);
+      
+      // Create Default subdirectory (this is what the ENOENT error is about)
+      const defaultDir = path.join(tempSessionPath, 'Default');
+      this.ensureDirectoryExists(defaultDir);
+      
+      console.log(`✅ Temp session directory structure ready`);
+    } catch (error) {
+      console.error('❌ Error creating directories:', error);
+      // Don't ignore this - it's critical for backups
+    }
+  }
+
 
   ensureDirectoryExists(dirPath) {
     try {
@@ -1133,7 +1156,6 @@ class BotManager {
           clientId: 'admin',
           store: this.supabaseStore,
           backupSyncIntervalMs: 60000,
-          dataPath: this.authPath,
         }),
         puppeteer: {
           headless: true,
@@ -1150,14 +1172,10 @@ class BotManager {
         },
         takeoverOnConflict: false,
         restartOnAuthFail: true,
-        puppeteerOptions: {
-          protocolTimeout: 60000, // Increased timeout for WhatsApp Web
-        }
       });
 
       this.setupClientEvents();
       await this.client.initialize();
-
     } catch (error) {
       console.error('❌ Error initializing bot:', error);
       
@@ -1255,8 +1273,31 @@ class BotManager {
     });
 
     this.client.on('remote_session_saved', () => {
-      console.log('💾 Session saved to remote store');
+      console.log('💾✅ Session saved to remote store - BACKUP SUCCESSFUL');
+      console.log(`💾 Next backup in ${this.client.options.authStrategy.options.backupSyncIntervalMs / 1000}s`);
       this.emitToAllSockets('bot-status', { status: 'session_saved' });
+      
+      // Also check Supabase to confirm
+      setTimeout(async () => {
+        try {
+          if (this.supabaseStore) {
+            const stats = await this.supabaseStore.getStorageStats();
+            console.log(`💾 Supabase confirmation: ${stats.sessionsCount} sessions, ${stats.totalSizeMB}MB`);
+          }
+        } catch (err) {
+          console.error('💾 Could not verify Supabase storage:', err);
+        }
+      }, 2000);
+    });
+
+    // Also add this to monitor backup attempts
+    this.client.on('remote_session_save_error', (error) => {
+      console.error('💾❌ Session backup FAILED:', error);
+      console.error('💾 Stack:', error.stack);
+      this.emitToAllSockets('bot-error', { 
+        error: 'Session backup failed',
+        details: error.message 
+      });
     });
 
     this.client.on('auth_failure', (error) => {
