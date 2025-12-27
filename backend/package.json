@@ -1,0 +1,37 @@
+{
+  "name": "whatsapp-bot-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "start:github": "GITHUB_ACTIONS=true node src/index.js",
+    "test": "GITHUB_ACTIONS=true node src/index.js --test",
+    "docker:dev": "NODE_ENV=development npm run dev",
+    "docker:start": "NODE_ENV=production npm start"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.86.0",
+    "@upstash/redis": "^1.35.7",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "fs-extra": "^11.3.2",
+    "mongoose": "^8.20.1",
+    "node-cache": "^5.1.2",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "socket.io": "^4.7.2",
+    "unzipper": "^0.12.3",
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
+    "wwebjs-mongo": "^1.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

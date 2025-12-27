@@ -1,0 +1,26 @@
+# docker-compose.prod.yml
+version: '3.8'
+
+services:
+  whatsapp-bot:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: whatsapp-bot-prod
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env.production
+    volumes:
+      - whatsapp_auth_prod:/usr/src/app/auth
+      - whatsapp_cache_prod:/usr/src/app/group_cache
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  whatsapp_auth_prod:
+  whatsapp_cache_prod:
