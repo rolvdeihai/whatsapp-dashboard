@@ -1,4 +1,5 @@
 // backend/src/index.js - FIXED CORS VERSION
+import webhookRouter from './routes/webhook.js';
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -7,6 +8,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import BotManager from './botManager.js';
+import { supabase } from './supabaseClient.js';
 
 // === Global error handlers ===
 process.on('unhandledRejection', (reason, promise) => {
@@ -75,6 +77,12 @@ app.use(corsMiddleware);
 // 🚀 Body parser middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// 🚀 Middleware to pass botManager to webhook routes
+app.use('/webhook', (req, res, next) => {
+  req.botManager = botManager;
+  next();
+}, webhookRouter);
 
 // 🚀 Socket.io configuration
 const io = new Server(server, {
@@ -227,10 +235,39 @@ app.get('*', (req, res) => {
 });
 
 // 🚀 Socket.io events
-io.on('connection', (socket) => {
-  console.log('🔌 Admin client connected:', socket.id);
+io.on('connection', async (socket) => {
+console.log('🔌 Admin client connected:', socket.id);
   
-  // Add socket to bot manager
+  // 1. Get URL from frontend
+  const endpointUrl = socket.handshake.query.endpoint_url;
+  console.log(`📌 Frontend connected to URL: ${endpointUrl || 'not provided'}`);
+  
+  // 2. Lookup endpoint ID from URL
+  if (endpointUrl) {
+    try {
+      const { data: endpoint, error } = await supabase
+        .from('endpoint_lists')
+        .select('id, name, url')
+        .eq('url', endpointUrl)
+        .eq('is_active', true)
+        .single();
+      
+      if (error || !endpoint) {
+        console.error(`❌ URL "${endpointUrl}" not found in endpoint_lists table!`);
+        console.error('   Make sure this URL exists in your endpoint_lists table:');
+        console.error('   ', endpointUrl);
+      } else {
+        console.log(`✅ Found endpoint: ${endpoint.name} (ID: ${endpoint.id})`);
+        botManager.setCurrentEndpointId(endpoint.id);
+      }
+    } catch (error) {
+      console.error('❌ Error looking up endpoint:', error);
+    }
+  } else {
+    console.log('⚠️ No endpoint_url provided by frontend');
+  }
+  
+  // 3. Add socket to bot manager (existing code)
   botManager.addSocketConnection(socket);
   
   // 🚀 Send immediate status update
@@ -275,6 +312,32 @@ io.on('connection', (socket) => {
   socket.on('force-retry', async () => {
     console.log('Force retry connection requested by client');
     await botManager.forceQRGeneration();
+  });
+
+  // backend/src/index.js - Add session management endpoints
+  app.post('/api/session/clear', async (req, res) => {
+    try {
+      console.log('Manual session clear requested');
+      await botManager.clearSession();
+      res.json({ success: true, message: 'Session cleared successfully' });
+    } catch (error) {
+      console.error('Error clearing session:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/session/status', (req, res) => {
+    const sessionManager = botManager.getSessionManager();
+    const status = botManager.getBotStatus();
+    
+    res.json({
+      bot_status: status,
+      qr_generated: sessionManager?.qrGenerated || false,
+      qr_attempts: sessionManager?.qrGeneration?.attempts || 0,
+      session_retries: sessionManager?.sessionRecovery?.currentRetries || 0,
+      force_qr: sessionManager?.forceQR || false,
+      timestamp: new Date().toISOString()
+    });
   });
   
   socket.on('disconnect', (reason) => {

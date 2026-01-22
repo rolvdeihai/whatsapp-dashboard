@@ -1,18 +1,11 @@
-// whatsapp-dashboard/app/page.js - STABLE CONNECTION VERSION
+// whatsapp-dashboard/app/page.js - UPDATED VERSION WITH SUPABASE ENDPOINTS
 
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import io from 'socket.io-client';
+import { useRouter } from 'next/navigation';
 import './globals.css';
-
-// 🚀 Backend URLs with fallback
-const BACKEND_URLS = [
-  process.env.NEXT_PUBLIC_BACKEND_URL_1 || 'http://localhost:5000',
-  process.env.NEXT_PUBLIC_BACKEND_URL_2,
-  process.env.NEXT_PUBLIC_BACKEND_URL_3,
-  process.env.NEXT_PUBLIC_BACKEND_URL_4,
-].filter(Boolean);
 
 const commonHeaders = {
   'ngrok-skip-browser-warning': '1',
@@ -23,8 +16,15 @@ const commonHeaders = {
 };
 
 function App() {
+  const router = useRouter();
+  
+  // 🚀 User & Endpoint states
+  const [userProfile, setUserProfile] = useState(null);
+  const [userEndpoints, setUserEndpoints] = useState([]);
+  const [selectedBackend, setSelectedBackend] = useState(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+  
   // 🚀 Connection states
-  const [selectedBackend, setSelectedBackend] = useState(BACKEND_URLS[0]);
   const [socket, setSocket] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [connectionError, setConnectionError] = useState(null);
@@ -46,8 +46,85 @@ function App() {
   const reconnectTimerRef = useRef(null);
   const heartbeatIntervalRef = useRef(null);
   
+  // 🚀 Load user profile and endpoints
+  useEffect(() => {
+    loadUserProfile();
+  }, []);
+  
+  const loadUserProfile = async () => {
+    try {
+      setIsLoadingProfile(true);
+      const response = await fetch('/api/user/profile', {
+        credentials: 'include'
+      });
+      
+      if (response.status === 401) {
+        router.push('/login?error=session_expired');
+        return;
+      }
+      
+      const data = await response.json();
+      
+      if (!data.user) {
+        router.push('/login');
+        return;
+      }
+      
+      setUserProfile(data.user);
+      
+      // Build endpoints array based on user's assigned endpoint
+      const endpoints = [];
+      
+      // Add user's assigned endpoint if available
+      if (data.user.endpoint_url) {
+        endpoints.push({
+          name: data.user.endpoint_name || 'Assigned Endpoint',
+          url: data.user.endpoint_url,
+          is_assigned: true
+        });
+      }
+      
+      // Also fetch available endpoints from supabase for this user's bot
+      if (data.user.bot_id) {
+        const endpointsResponse = await fetch(`/api/user/endpoints?bot_id=${data.user.bot_id}`);
+        if (endpointsResponse.ok) {
+          const endpointsData = await endpointsResponse.json();
+          // Filter out already added assigned endpoint
+          const additionalEndpoints = endpointsData.filter(ep => 
+            !endpoints.some(e => e.url === ep.url)
+          );
+          endpoints.push(...additionalEndpoints.map(ep => ({
+            id: ep.id, // Make sure this includes the ID
+            name: ep.name,
+            url: ep.url,
+            is_assigned: false
+          })));
+        }
+      }
+      
+      setUserEndpoints(endpoints);
+      
+      // Set initial selected backend
+      if (endpoints.length > 0) {
+        setSelectedBackend(endpoints[0].url);
+      } else {
+        setConnectionError('No endpoints available for your account');
+      }
+      
+    } catch (error) {
+      console.error('Failed to load user profile:', error);
+      router.push('/login?error=server_error');
+    } finally {
+      setIsLoadingProfile(false);
+    }
+  };
+  
   // 🚀 Helper function for API calls
   const apiCall = async (endpoint, options = {}) => {
+    if (!selectedBackend) {
+      throw new Error('No backend selected');
+    }
+    
     try {
       const response = await fetch(`${selectedBackend}${endpoint}`, {
         ...options,
@@ -69,8 +146,17 @@ function App() {
     }
   };
   
-  // 🚀 Initialize socket connection with stability
   const initializeSocket = useCallback(() => {
+    if (!selectedBackend) {
+      console.log('❌ No selectedBackend value:', selectedBackend);
+      return;
+    }
+
+    // DEBUG: Check what we're sending
+    console.log('🔍 DEBUG - selectedBackend value:', selectedBackend);
+    console.log('🔍 DEBUG - typeof selectedBackend:', typeof selectedBackend);
+    console.log('🔍 DEBUG - Will send endpoint_url:', selectedBackend);
+    
     if (socketRef.current?.connected) {
       console.log('Socket already connected');
       return;
@@ -81,9 +167,11 @@ function App() {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
-    
-    console.log(`🔗 Connecting to backend: ${selectedBackend}`);
+
     setConnectionStatus('connecting');
+    
+    // Create socket WITH DEBUGGING
+    console.log('🔍 DEBUG - Creating socket with query:', { endpoint_url: selectedBackend });
     
     const newSocket = io(selectedBackend, {
       transports: ['websocket', 'polling'],
@@ -95,7 +183,10 @@ function App() {
       randomizationFactor: 0.5,
       autoConnect: true,
       forceNew: true,
-      multiplex: false
+      multiplex: false,
+      query: {
+        endpoint_url: selectedBackend
+      }
     });
     
     socketRef.current = newSocket;
@@ -185,6 +276,13 @@ function App() {
     };
   }, [selectedBackend, reconnectAttempts]);
   
+  // 🚀 Initialize socket when backend is selected
+  useEffect(() => {
+    if (selectedBackend && !isLoadingProfile) {
+      initializeSocket();
+    }
+  }, [selectedBackend, isLoadingProfile, initializeSocket]);
+  
   // 🚀 Heartbeat system
   const startHeartbeat = () => {
     stopHeartbeat();
@@ -193,7 +291,7 @@ function App() {
       if (socketRef.current?.connected) {
         socketRef.current.emit('heartbeat', { timestamp: Date.now() });
       }
-    }, 15000); // Every 15 seconds
+    }, 15000);
   };
   
   const stopHeartbeat = () => {
@@ -203,11 +301,8 @@ function App() {
     }
   };
   
-  // 🚀 Initialize on mount
+  // 🚀 Load saved groups on mount
   useEffect(() => {
-    initializeSocket();
-    
-    // Load saved groups
     const saved = localStorage.getItem('activeGroups');
     if (saved) {
       try {
@@ -230,7 +325,7 @@ function App() {
         socketRef.current = null;
       }
     };
-  }, [initializeSocket]);
+  }, []);
   
   // 🚀 Monitor heartbeat
   useEffect(() => {
@@ -338,6 +433,19 @@ function App() {
     searchGroups();
   };
   
+  // 🚀 Change backend
+  const changeBackend = (url) => {
+    setSelectedBackend(url);
+    
+    // Reinitialize socket with new backend
+    setTimeout(() => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+      initializeSocket();
+    }, 100);
+  };
+  
   // 🚀 Connection status display
   const getConnectionDisplay = () => {
     switch (connectionStatus) {
@@ -386,20 +494,54 @@ function App() {
     initializeSocket();
   };
   
-  // 🚀 Change backend
-  const changeBackend = (url) => {
-    setSelectedBackend(url);
-    
-    // Reinitialize socket with new backend
-    setTimeout(() => {
-      initializeSocket();
-    }, 100);
+  const goToDashboard = () => {
+    router.push('/dashboard');
   };
+  
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+      });
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('rememberedEmail');
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('rememberedEmail');
+      router.push('/login');
+    }
+  };
+  
+  if (isLoadingProfile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
+      </div>
+    );
+  }
+  
+  if (!userProfile) {
+    return null; // Will redirect to login
+  }
   
   return (
     <div className="App">
       <header className="App-header">
-        <h1>WhatsApp Bot Dashboard</h1>
+        <div className="header-top">
+          <h1>WhatsApp Bot Dashboard</h1>
+          <div className="user-info">
+            <span className="user-email">{userProfile.email}</span>
+            <span className="user-plan">{userProfile.plan_id === 'free' ? 'Free Plan' : 'Pro Plan'}</span>
+            <button onClick={goToDashboard} className="btn btn-secondary btn-sm">
+              Dashboard
+            </button>
+            <button onClick={handleLogout} className="btn btn-danger btn-sm">
+              Logout
+            </button>
+          </div>
+        </div>
         
         {/* Connection Status */}
         <div className="connection-status">
@@ -409,6 +551,8 @@ function App() {
           </div>
           <div className={`status ${botStatus}`}>
             Bot: {getBotDisplay()}
+            {userProfile.bot_name && ` - ${userProfile.bot_name}`}
+            {userProfile.wa_account && ` (${userProfile.wa_account})`}
           </div>
           
           {connectionError && (
@@ -422,65 +566,80 @@ function App() {
       </header>
       
       <div className="dashboard">
-        {/* Backend Selection */}
+        {/* Endpoint Selection */}
         <section className="backend-section">
-          <h2>Backend Selection</h2>
-          <div className="backend-list">
-            {BACKEND_URLS.map((url, index) => (
-              <button
-                key={url}
-                onClick={() => changeBackend(url)}
-                className={`btn ${url === selectedBackend ? 'btn-primary' : 'btn-secondary'}`}
-              >
-                Backend {index + 1}
-                {url === selectedBackend && ' ✓'}
-              </button>
-            ))}
-          </div>
-        </section>
-        
-        {/* Bot Controls */}
-        <section className="connection-section">
-          <h2>Bot Controls</h2>
-          
-          <div className="button-group">
-            <button 
-              onClick={startBot} 
-              disabled={!socketRef.current?.connected || isLoading || botStatus === 'connected'}
-              className="btn btn-primary"
-            >
-              {isLoading ? 'Loading...' : 
-               botStatus === 'connected' ? 'Connected' : 
-               botStatus === 'scan_qr' ? 'Scan QR' : 'Start Bot'}
-            </button>
-            
-            {botStatus === 'connected' && (
-              <button onClick={stopBot} className="btn btn-danger">
-                Stop Bot
-              </button>
-            )}
-            
-            {(botStatus === 'scan_qr' || botStatus === 'loading') && (
-              <button onClick={forceQR} className="btn btn-warning">
-                Force New QR
-              </button>
-            )}
-          </div>
-          
-          {/* QR Code Display */}
-          {qrCode && botStatus === 'scan_qr' && (
-            <div className="qr-code">
-              <p>Scan this QR code with WhatsApp:</p>
-              <img src={qrCode} alt="QR Code" />
-              <p className="qr-help">
-                Open WhatsApp → Settings → Linked Devices → Link a Device
-              </p>
+          <h2>Available Endpoints</h2>
+          {userEndpoints.length === 0 ? (
+            <div className="alert alert-warning">
+              No endpoints available for your account. Please contact administrator.
+            </div>
+          ) : (
+            <div className="endpoint-list">
+              {userEndpoints.map((endpoint, index) => (
+                <div key={endpoint.url} className="endpoint-card">
+                  <div className="endpoint-info">
+                    <h3>{endpoint.name}</h3>
+                    <p className="endpoint-url">{endpoint.url}</p>
+                    {endpoint.is_assigned && (
+                      <span className="endpoint-badge">Assigned</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => changeBackend(endpoint.url)}
+                    className={`btn ${endpoint.url === selectedBackend ? 'btn-primary' : 'btn-secondary'}`}
+                  >
+                    {endpoint.url === selectedBackend ? '✓ Connected' : 'Connect'}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </section>
         
+        {/* Bot Controls */}
+        {selectedBackend && (
+          <section className="connection-section">
+            <h2>Bot Controls</h2>
+            
+            <div className="button-group">
+              <button 
+                onClick={startBot} 
+                disabled={!socketRef.current?.connected || isLoading || botStatus === 'connected'}
+                className="btn btn-primary"
+              >
+                {isLoading ? 'Loading...' : 
+                 botStatus === 'connected' ? 'Connected' : 
+                 botStatus === 'scan_qr' ? 'Scan QR' : 'Start Bot'}
+              </button>
+              
+              {botStatus === 'connected' && (
+                <button onClick={stopBot} className="btn btn-danger">
+                  Stop Bot
+                </button>
+              )}
+              
+              {(botStatus === 'scan_qr' || botStatus === 'loading') && (
+                <button onClick={forceQR} className="btn btn-warning">
+                  Force New QR
+                </button>
+              )}
+            </div>
+            
+            {/* QR Code Display */}
+            {qrCode && botStatus === 'scan_qr' && (
+              <div className="qr-code">
+                <p>Scan this QR code with WhatsApp:</p>
+                <img src={qrCode} alt="QR Code" />
+                <p className="qr-help">
+                  Open WhatsApp → Settings → Linked Devices → Link a Device
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+        
         {/* Groups Management */}
-        {(botStatus === 'connected' || botStatus === 'scan_qr') && (
+        {selectedBackend && (botStatus === 'connected' || botStatus === 'scan_qr') && (
           <section className="groups-section">
             <h2>Manage Groups</h2>
             
@@ -562,7 +721,7 @@ function App() {
         <small>
           Connection: {connectionStatus} | 
           Heartbeat: {lastHeartbeat ? 'Active' : 'Inactive'} | 
-          Backend: {selectedBackend}
+          Backend: {selectedBackend ? new URL(selectedBackend).hostname : 'None'}
         </small>
       </footer>
     </div>

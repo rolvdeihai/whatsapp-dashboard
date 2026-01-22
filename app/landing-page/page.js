@@ -172,6 +172,15 @@ export default function LandingPage() {
               Login Admin
             </a>
           </div>
+          <div className="flex items-center space-x-6">
+            <a href="/login" className="text-gray-600 hover:text-green-600">Login</a>
+            <a 
+              href="/signup" 
+              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+            >
+              Sign Up Free
+            </a>
+          </div>
         </div>
       </nav>
 

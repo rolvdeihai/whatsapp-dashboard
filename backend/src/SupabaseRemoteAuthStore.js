@@ -1,41 +1,53 @@
-// backend/src/SupabaseRemoteAuthStore.js - COMPLETE DEBUG VERSION
+// backend/src/SupabaseRemoteAuthStore.js - UPDATED VERSION
 import { supabase } from './supabaseClient.js';
-import fs from 'fs-extra'; // Use fs-extra for full functionality
+import fs from 'fs-extra';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export class SupabaseRemoteAuthStore {
-  constructor(clientId) {
+  constructor(clientId, endpointId = null) {
     this.clientId = clientId;
+    this.endpointId = endpointId; // Store endpoint association
     this.tableName = 'whatsapp_sessions';
     this.chunksTableName = 'whatsapp_session_chunks';
+    this.chunkSize = 512 * 1024; // 512KB chunks
     this.initTables();
+  }
+
+  // Method to set/update endpoint ID dynamically
+  setEndpointId(endpointId) {
+    this.endpointId = endpointId;
+    console.log(`🔗 Session store now associated with endpoint: ${endpointId}`);
   }
 
   async initTables() {
     try {
+      console.log(`🔄 Initializing Supabase store for endpoint: ${this.endpointId || 'default'}`);
+      
+      // Check if tables exist (you can run the SQL above if they don't)
       const { error: sessionsError } = await supabase
         .from(this.tableName)
-        .select('*')
+        .select('id')
         .limit(1);
 
       if (sessionsError && sessionsError.code === '42P01') {
-        console.log('Creating sessions table...');
+        console.error('⚠️ Sessions table does not exist. Please run the SQL migration.');
       }
 
       const { error: chunksError } = await supabase
         .from(this.chunksTableName)
-        .select('*')
+        .select('id')
         .limit(1);
 
       if (chunksError && chunksError.code === '42P01') {
-        console.log('Creating chunks table...');
+        console.error('⚠️ Chunks table does not exist. Please run the SQL migration.');
       }
 
-      console.log('✅ Supabase store initialized for client:', this.clientId);
+      console.log('✅ Supabase store initialized');
     } catch (error) {
       console.error('Error initializing Supabase tables:', error);
     }
@@ -44,321 +56,294 @@ export class SupabaseRemoteAuthStore {
   async sessionExists(options) {
     try {
       const sessionId = `${this.clientId}-${options.session}`;
-      const { data, error } = await supabase
+      
+      // Build query WITH endpoint filter
+      let query = supabase
         .from(this.tableName)
-        .select('id')
-        .eq('id', sessionId)
-        .single();
+        .select('id, chunks_count, total_size, endpoint_id')
+        .eq('id', sessionId);
+
+      // ✅ CRITICAL: Only return true if endpoint matches
+      if (this.endpointId) {
+        query = query.eq('endpoint_id', this.endpointId);
+      } else {
+        // If no endpoint specified, only return sessions with NULL endpoint
+        query = query.is('endpoint_id', null);
+      }
+
+      const { data, error } = await query.single();
 
       if (error && error.code !== 'PGRST116') {
         console.error('Error checking session:', error);
         return false;
       }
 
-      return !!data;
+      if (!data) return false;
+
+      // Verify chunks exist (existing code)
+      const { data: chunks } = await supabase
+        .from(this.chunksTableName)
+        .select('chunk_index')
+        .eq('session_id', sessionId);
+
+      return chunks && chunks.length === data.chunks_count;
     } catch (error) {
       console.error('Error in sessionExists:', error);
       return false;
     }
   }
 
-  // ====== ENHANCED DEBUG SAVE METHOD ======
   async save(options) {
     try {
       const sessionId = `${this.clientId}-${options.session}`;
       const zipFileName = `${options.session}.zip`;
       const zipPath = path.join(process.cwd(), zipFileName);
       
-      console.log(`\n🔄 Save called for session: ${sessionId}`);
+      console.log(`\n💾 SAVE SESSION: ${sessionId}`);
       console.log(`📁 Zip path: ${zipPath}`);
-      
-      // ====== STEP 1: COMPREHENSIVE ZIP ANALYSIS ======
-      console.log('\n🔍 ===== ZIP FILE DEBUG ANALYSIS =====');
-      
-      // 1. Check if zip exists and get stats
+      console.log(`🔗 Associated endpoint: ${this.endpointId || 'none'}`);
+
+      // 1. Verify zip file exists
       if (!fs.existsSync(zipPath)) {
         console.error(`❌ Zip file does not exist: ${zipPath}`);
-        console.log('📂 Current directory contents:');
-        const files = fs.readdirSync(process.cwd());
-        files.forEach(file => {
-          try {
-            const stats = fs.statSync(file);
-            console.log(`   - ${file} (${stats.size} bytes, ${stats.isDirectory() ? 'DIR' : 'FILE'})`);
-          } catch (e) {
-            console.log(`   - ${file} (error reading)`);
-          }
-        });
         return false;
       }
-      
+
       const stats = fs.statSync(zipPath);
-      console.log(`📊 Zip file stats:`);
-      console.log(`   Size: ${stats.size} bytes (${Math.round(stats.size / 1024 / 1024 * 100) / 100} MB)`);
-      console.log(`   Modified: ${stats.mtime}`);
+      console.log(`📊 Zip size: ${stats.size} bytes (${Math.round(stats.size / 1024)}KB)`);
+
+      // 2. Read and process zip file
+      const zipBuffer = fs.readFileSync(zipPath);
+      const checksum = createHash('md5').update(zipBuffer).digest('hex');
+      console.log(`🔐 File checksum: ${checksum}`);
+
+      const base64Data = zipBuffer.toString('base64');
+      console.log(`📊 Base64 length: ${base64Data.length} chars`);
+
+      // 3. Split into chunks
+      const chunks = [];
+      let chunkStart = 0;
+      let chunkIndex = 0;
       
-      // 2. Read and analyze zip structure
-      try {
-        const unzipper = await import('unzipper');
-        const buffer = fs.readFileSync(zipPath);
+      while (chunkStart < base64Data.length) {
+        let chunkEnd = Math.min(chunkStart + this.chunkSize, base64Data.length);
         
-        // Show hex dump for small files (debug if it's a real zip)
-        if (stats.size < 5000) {
-          console.log(`🔤 First 200 bytes (hex):`);
-          console.log(buffer.slice(0, 200).toString('hex').match(/.{1,32}/g).join('\n   '));
-          console.log(`🔤 First 200 bytes (ascii):`);
-          console.log(buffer.slice(0, 200).toString('ascii'));
+        // Adjust to end at base64 boundary
+        const remainder = (chunkEnd - chunkStart) % 4;
+        if (remainder !== 0 && chunkEnd < base64Data.length) {
+          chunkEnd -= remainder;
         }
         
-        // Try to open as zip
-        const directory = await unzipper.Open.buffer(buffer);
-        console.log(`\n📦 ZIP CONTENTS (${directory.files.length} files):`);
-        
-        let totalSizeInZip = 0;
-        let fileCount = 0;
-        let dirCount = 0;
-        
-        for (const file of directory.files) {
-          totalSizeInZip += file.size;
-          const type = file.type === 'Directory' ? '📁' : '📄';
-          
-          // Show all files for small zips, or summary for large ones
-          if (directory.files.length <= 50 || file.size > 0) {
-            console.log(`   ${type} ${file.path} (${file.size} bytes)`);
-          }
-          
-          if (file.type === 'Directory') dirCount++;
-          else fileCount++;
-        }
-        
-        console.log(`\n📊 ZIP SUMMARY:`);
-        console.log(`   Total files: ${fileCount}`);
-        console.log(`   Total directories: ${dirCount}`);
-        console.log(`   Total size of files in zip: ${totalSizeInZip} bytes`);
-        console.log(`   Zip file overhead: ${stats.size - totalSizeInZip} bytes`);
-        
-        // 3. Check for critical WhatsApp session files
-        const criticalFiles = [
-          'Default/Cookies',
-          'Default/Local Storage',
-          'IndexedDB',
-          'Local Storage',
-          'Session Storage'
-        ];
-        
-        console.log(`\n🔑 CRITICAL FILES CHECK:`);
-        for (const criticalFile of criticalFiles) {
-          const found = directory.files.find(f => f.path.includes(criticalFile));
-          if (found) {
-            console.log(`   ✅ ${criticalFile}: FOUND (${found.size} bytes)`);
-          } else {
-            console.log(`   ❌ ${criticalFile}: MISSING`);
-          }
-        }
-        
-        // 4. Show largest files
-        console.log(`\n🏆 TOP 10 LARGEST FILES:`);
-        const sortedFiles = [...directory.files]
-          .filter(f => f.type !== 'Directory')
-          .sort((a, b) => b.size - a.size)
-          .slice(0, 10);
-        
-        sortedFiles.forEach((file, i) => {
-          console.log(`   ${i + 1}. ${file.path} (${file.size} bytes)`);
+        const chunkContent = base64Data.substring(chunkStart, chunkEnd);
+        chunks.push({
+          index: chunkIndex,
+          content: chunkContent,
+          length: chunkContent.length
         });
         
-      } catch (zipError) {
-        console.error(`❌ Error analyzing zip: ${zipError.message}`);
-        console.log('   This might not be a valid zip file');
-        
-        // Read raw content for debugging
-        const buffer = fs.readFileSync(zipPath);
-        console.log(`   First 500 bytes: ${buffer.slice(0, 500).toString('hex')}`);
-      }
-      
-      console.log('🔍 ===== END ZIP ANALYSIS =====\n');
-      
-      // ====== STEP 2: COMPARE WITH SOURCE DIRECTORY ======
-      console.log('🔍 ===== SOURCE DIRECTORY ANALYSIS =====');
-      
-      const authPath = path.join(__dirname, '../auth');
-      const sessionDir = path.join(authPath, 'RemoteAuth-admin');
-      const tempDir = path.join(authPath, `wwebjs_temp_session_${this.clientId}`);
-      
-      console.log(`📁 Session dir: ${sessionDir}`);
-      console.log(`📁 Temp dir: ${tempDir}`);
-      
-      if (fs.existsSync(sessionDir)) {
-        const sessionStats = fs.statSync(sessionDir);
-        console.log(`   ✅ Session directory exists: ${sessionStats.size} bytes`);
-        
-        // Calculate total size recursively
-        const calculateDirSize = (dir) => {
-          let total = 0;
-          try {
-            const items = fs.readdirSync(dir, { withFileTypes: true });
-            for (const item of items) {
-              const itemPath = path.join(dir, item.name);
-              if (item.isDirectory()) {
-                total += calculateDirSize(itemPath);
-              } else {
-                const itemStats = fs.statSync(itemPath);
-                total += itemStats.size;
-              }
-            }
-          } catch (e) {}
-          return total;
-        };
-        
-        const sessionSize = calculateDirSize(sessionDir);
-        console.log(`   📊 Total session size: ${sessionSize} bytes (${Math.round(sessionSize / 1024 / 1024 * 100) / 100} MB)`);
-        
-        // Compare with zip size
-        console.log(`\n📊 SIZE COMPARISON:`);
-        console.log(`   Session directory: ${sessionSize} bytes`);
-        console.log(`   Zip file: ${stats.size} bytes`);
-        console.log(`   Compression ratio: ${Math.round((stats.size / sessionSize) * 10000) / 100}%`);
-        
-        if (sessionSize > 0 && stats.size < sessionSize * 0.1) {
-          console.log(`   ⚠️  WARNING: Zip is less than 10% of session size!`);
-          console.log(`      Something is missing from the zip!`);
-        }
-      } else {
-        console.log('   ❌ Session directory does not exist');
-      }
-      
-      if (fs.existsSync(tempDir)) {
-        const tempStats = fs.statSync(tempDir);
-        console.log(`\n📁 Temp directory exists: ${tempStats.size} bytes`);
-        
-        // List temp dir contents
-        try {
-          const tempItems = fs.readdirSync(tempDir, { withFileTypes: true });
-          console.log(`   Contains ${tempItems.length} items:`);
-          tempItems.forEach(item => {
-            const itemPath = path.join(tempDir, item.name);
-            try {
-              const itemStats = fs.statSync(itemPath);
-              console.log(`   ${item.isDirectory() ? '📁' : '📄'} ${item.name} (${itemStats.size} bytes)`);
-            } catch (e) {
-              console.log(`   ? ${item.name} (error)`);
-            }
-          });
-        } catch (e) {
-          console.log(`   Error reading temp dir: ${e.message}`);
-        }
-      } else {
-        console.log('\n📁 Temp directory does not exist');
-      }
-      
-      console.log('🔍 ===== END SOURCE ANALYSIS =====\n');
-      
-      // ====== STEP 3: ACTUALLY SAVE TO SUPABASE ======
-      console.log('💾 Saving to Supabase...');
-      const sessionData = fs.readFileSync(zipPath);
-      console.log(`📦 Read session zip file: ${zipFileName} (${sessionData.length} bytes)`);
-      
-      if (!sessionData || sessionData.length === 0) {
-        console.warn('⚠️ Empty session data in zip file');
-        return false;
-      }
-      
-      const base64Data = sessionData.toString('base64');
-      const chunkSize = 1024 * 1024;
-      const chunks = [];
-      
-      for (let i = 0; i < base64Data.length; i += chunkSize) {
-        chunks.push(base64Data.substring(i, i + chunkSize));
+        chunkStart = chunkEnd;
+        chunkIndex++;
       }
 
-      // Save metadata
-      const { error: sessionError } = await supabase
+      console.log(`📦 Split into ${chunks.length} chunks`);
+
+      // 4. Save metadata with endpoint association
+      const sessionData = {
+        id: sessionId,
+        session: sessionId,
+        client_id: this.clientId,
+        chunks_count: chunks.length,
+        total_size: base64Data.length,
+        file_size: stats.size,
+        checksum: checksum,
+        endpoint_id: this.endpointId, // Store endpoint association
+        last_accessed: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { error: metadataError } = await supabase
         .from(this.tableName)
-        .upsert({
-          id: sessionId,
-          session: sessionId,
-          client_id: this.clientId,
-          chunks_count: chunks.length,
-          total_size: base64Data.length,
-          last_accessed: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'id' });
+        .upsert(sessionData, { 
+          onConflict: 'id',
+          ignoreDuplicates: false 
+        });
 
-      if (sessionError) throw sessionError;
-      console.log(`✅ Session metadata created: ${sessionId}`);
+      if (metadataError) {
+        console.error('❌ Error saving metadata:', metadataError);
+        throw metadataError;
+      }
+      console.log('✅ Session metadata saved');
 
-      // Delete existing chunks
-      const { error: deleteChunksError } = await supabase
+      // 5. Delete existing chunks
+      const { error: deleteError } = await supabase
         .from(this.chunksTableName)
         .delete()
         .eq('session_id', sessionId);
 
-      if (deleteChunksError) {
-        console.error('Error deleting chunks:', deleteChunksError);
+      if (deleteError) {
+        console.error('⚠️ Error deleting old chunks:', deleteError);
+      } else {
+        console.log('🧹 Cleared old chunks');
       }
 
-      // Save chunks
-      for (let i = 0; i < chunks.length; i++) {
-        const { error } = await supabase
+      // 6. Save chunks in batches - USING CORRECT COLUMN NAMES
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const batch = chunks.slice(i, i + BATCH_SIZE);
+        const chunkInserts = batch.map(chunk => ({
+          session_id: sessionId,
+          chunk_index: chunk.index,
+          chunk_data: chunk.content,
+          total_chunks: chunks.length,
+          created_at: new Date().toISOString()
+          // Removed chunk_size as it doesn't exist in your table
+        }));
+
+        const { error: batchError } = await supabase
           .from(this.chunksTableName)
-          .upsert({
-            session_id: sessionId,
-            chunk_index: i,
-            chunk_data: chunks[i],
-            total_chunks: chunks.length,
-            updated_at: new Date().toISOString()
-          }, { onConflict: 'session_id,chunk_index' });
+          .insert(chunkInserts);
 
-        if (error) {
-          console.error(`❌ Error saving chunk ${i}:`, error);
-          throw error;
+        if (batchError) {
+          console.error(`❌ Error saving batch ${i/BATCH_SIZE + 1}:`, batchError);
+          throw batchError;
         }
+
+        console.log(`✅ Saved batch ${i/BATCH_SIZE + 1}: chunks ${i} to ${i + batch.length - 1}`);
       }
 
-      console.log(`✅ Session saved to Supabase: ${sessionId} (${chunks.length} chunks, ${Math.round(sessionData.length / 1024)}KB)`);
+      console.log(`✅ Session saved successfully: ${sessionId}`);
+      console.log(`   Associated with endpoint: ${this.endpointId || 'none'}`);
+      console.log(`   Total chunks: ${chunks.length}`);
+
       return true;
-      
     } catch (error) {
-      console.error('❌ Error saving session to Supabase:', error);
+      console.error('❌ CRITICAL: Error saving session to Supabase:', error);
       return false;
     }
   }
 
-  // Extract session from chunks and write to file
   async extract(options) {
     try {
       const sessionId = `${this.clientId}-${options.session}`;
       const outputPath = options.path;
       
-      console.log(`🔄 Extracting session to: ${outputPath} for session: ${sessionId}`);
-      
-      // Get all chunks for this session
-      const { data: chunks, error } = await supabase
-        .from(this.chunksTableName)
-        .select('chunk_index, chunk_data, total_chunks')
-        .eq('session_id', sessionId)
-        .order('chunk_index', { ascending: true });
+      console.log(`\n🔄 EXTRACT SESSION: ${sessionId}`);
+      console.log(`📁 Output path: ${outputPath}`);
+      console.log(`🔗 Current endpoint: ${this.endpointId || 'any'}`);
 
-      if (error) throw error;
-      
-      if (!chunks || chunks.length === 0) {
-        console.log('No session chunks found for:', sessionId);
+      // ✅ CRITICAL: Get session metadata WITH endpoint validation
+      let query = supabase
+        .from(this.tableName)
+        .select('*')
+        .eq('id', sessionId);
+
+      // Apply endpoint filter if we have one
+      if (this.endpointId) {
+        query = query.eq('endpoint_id', this.endpointId);
+      } else {
+        // If no endpoint specified, only get unbound sessions
+        query = query.is('endpoint_id', null);
+      }
+
+      const { data: sessionMeta, error: metaError } = await query.single();
+
+      if (metaError) {
+        console.error(`❌ Session not found or endpoint mismatch for ${sessionId}`);
+        console.error(`   Current endpoint: ${this.endpointId || 'none'}`);
         return null;
       }
 
-      // Reconstruct the base64 string
-      let base64Data = '';
-      for (const chunk of chunks) {
-        base64Data += chunk.chunk_data;
+      if (!sessionMeta) {
+        console.error(`❌ No session found or endpoint mismatch: ${sessionId}`);
+        return null;
       }
 
-      // Convert back to Buffer
-      const sessionData = Buffer.from(base64Data, 'base64');
+      console.log(`✅ Session found and endpoint validated`);
+      console.log(`   Stored endpoint: ${sessionMeta.endpoint_id || 'none'}`);
+      console.log(`   Current endpoint: ${this.endpointId || 'none'}`);
+      
+      // If endpoints don't match, reject
+      if (sessionMeta.endpoint_id !== this.endpointId) {
+        console.error(`❌ ENDPOINT MISMATCH!`);
+        console.error(`   Session belongs to endpoint: ${sessionMeta.endpoint_id}`);
+        console.error(`   Current endpoint: ${this.endpointId}`);
+        console.error(`   Access DENIED - session is locked to another endpoint`);
+        return null;
+      }
+      
+      return this.extractSessionData(sessionMeta, sessionId, outputPath);
+    } catch (error) {
+      console.error('❌ Error extracting session:', error);
+      return null;
+    }
+  }
 
-      // Write the buffer to the output file
+  async extractSessionData(sessionMeta, sessionId, outputPath) {
+    try {
+      // 2. Get all chunks - USING CORRECT COLUMN NAMES
+      const { data: chunks, error: chunksError } = await supabase
+        .from(this.chunksTableName)
+        .select('chunk_index, chunk_data') // Removed chunk_size
+        .eq('session_id', sessionId)
+        .order('chunk_index', { ascending: true });
+
+      if (chunksError) {
+        console.error('❌ Error fetching chunks:', chunksError);
+        return null;
+      }
+
+      if (!chunks || chunks.length === 0) {
+        console.error('❌ No chunks found for session');
+        return null;
+      }
+
+      console.log(`📦 Retrieved ${chunks.length} chunks`);
+
+      // 3. Reconstruct base64 string
+      let base64Data = '';
+      const chunkMap = new Map();
+      chunks.forEach(chunk => {
+        chunkMap.set(chunk.chunk_index, chunk);
+      });
+
+      for (let i = 0; i < sessionMeta.chunks_count; i++) {
+        const chunk = chunkMap.get(i);
+        if (chunk) {
+          base64Data += chunk.chunk_data;
+        } else {
+          console.error(`❌ Missing chunk ${i}`);
+          base64Data += '';
+        }
+      }
+
+      // 4. Convert to buffer
+      let sessionData;
+      try {
+        sessionData = Buffer.from(base64Data, 'base64');
+        console.log(`✅ Converted to buffer: ${sessionData.length} bytes`);
+      } catch (bufferError) {
+        console.error(`❌ Failed to convert base64 to buffer: ${bufferError.message}`);
+        return null;
+      }
+
+      // 5. Verify checksum if available
+      if (sessionMeta.checksum) {
+        const extractedChecksum = createHash('md5').update(sessionData).digest('hex');
+        console.log(`🔐 Extracted checksum: ${extractedChecksum}`);
+        console.log(`🔐 Expected checksum: ${sessionMeta.checksum}`);
+        
+        if (extractedChecksum !== sessionMeta.checksum) {
+          console.error('❌ CHECKSUM MISMATCH! Session data may be corrupted');
+        } else {
+          console.log('✅ Checksum verified');
+        }
+      }
+
+      // 6. Write to file
       await fs.writeFile(outputPath, sessionData);
-      console.log(`✅ Session extracted to file: ${outputPath} (${sessionData.length} bytes)`);
+      console.log(`✅ Session written to: ${outputPath}`);
 
-      // Update last accessed time
+      // 7. Update last accessed
       await supabase
         .from(this.tableName)
         .update({ 
@@ -367,142 +352,83 @@ export class SupabaseRemoteAuthStore {
         })
         .eq('id', sessionId);
 
-      console.log(`✅ Session extracted from Supabase: ${sessionId} (${chunks.length} chunks)`);
+      console.log(`✅ Session extracted successfully: ${sessionId}`);
       return sessionData;
     } catch (error) {
-      console.error('❌ Error extracting session from Supabase:', error);
+      console.error('❌ Error in extractSessionData:', error);
       return null;
     }
   }
 
-  // Delete session and all chunks
   async delete(options) {
     try {
       const sessionId = `${this.clientId}-${options.session}`;
       
-      // ✅ FIX: Delete chunks first to avoid foreign key constraint issues
+      console.log(`🗑️ Deleting session: ${sessionId}`);
+      
+      // Delete chunks first
       const { error: chunksError } = await supabase
         .from(this.chunksTableName)
         .delete()
         .eq('session_id', sessionId);
 
-      if (chunksError) console.error('Error deleting chunks:', chunksError);
+      if (chunksError) {
+        console.error('Error deleting chunks:', chunksError);
+      }
 
-      // Then delete session metadata
-      const { error } = await supabase
+      // Delete session metadata
+      const { error: sessionError } = await supabase
         .from(this.tableName)
         .delete()
         .eq('id', sessionId);
 
-      if (error) throw error;
+      if (sessionError) {
+        console.error('Error deleting session metadata:', sessionError);
+        throw sessionError;
+      }
 
-      console.log(`✅ Session deleted from Supabase: ${sessionId}`);
+      console.log(`✅ Session deleted: ${sessionId}`);
       return true;
     } catch (error) {
-      console.error('Error deleting session from Supabase:', error);
+      console.error('Error deleting session:', error);
       return false;
     }
   }
 
-  // List all sessions for this client
-  async list() {
+  // Get all sessions for a specific endpoint
+  async getSessionsByEndpoint(endpointId) {
     try {
       const { data, error } = await supabase
         .from(this.tableName)
-        .select('id, client_id, chunks_count, total_size, last_accessed, updated_at')
-        .eq('client_id', this.clientId);
+        .select('*')
+        .eq('endpoint_id', endpointId);
 
       if (error) throw error;
-
       return data || [];
     } catch (error) {
-      console.error('Error listing sessions:', error);
+      console.error('Error getting sessions by endpoint:', error);
       return [];
     }
   }
 
-  // Get session info
-  async getSessionInfo(options) {
+  // Migrate session to a different endpoint
+  async migrateSession(sessionId, newEndpointId) {
     try {
-      const sessionId = `${this.clientId}-${options.session}`;
-      
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from(this.tableName)
-        .select('*')
-        .eq('id', sessionId)
-        .single();
+        .update({ 
+          endpoint_id: newEndpointId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', sessionId);
 
       if (error) throw error;
-
-      return data;
-    } catch (error) {
-      console.error('Error getting session info:', error);
-      return null;
-    }
-  }
-
-  // Clean up old sessions (older than specified hours)
-  async cleanupOldSessions(maxAgeHours = 24) {
-    try {
-      const cutoffTime = new Date(Date.now() - (maxAgeHours * 60 * 60 * 1000)).toISOString();
       
-      // Find old sessions
-      const { data: oldSessions, error } = await supabase
-        .from(this.tableName)
-        .select('id')
-        .lt('last_accessed', cutoffTime)
-        .eq('client_id', this.clientId);
-
-      if (error) throw error;
-
-      let deletedCount = 0;
-      
-      // Delete each old session
-      for (const session of oldSessions) {
-        const sessionId = session.id;
-        const baseSession = sessionId.replace(`${this.clientId}-`, '');
-        
-        await this.delete({ session: baseSession });
-        deletedCount++;
-      }
-
-      console.log(`🧹 Cleaned up ${deletedCount} old sessions from Supabase`);
-      return deletedCount;
+      console.log(`✅ Session ${sessionId} migrated to endpoint ${newEndpointId}`);
+      return true;
     } catch (error) {
-      console.error('Error cleaning up old sessions:', error);
-      return 0;
-    }
-  }
-
-  // Get storage statistics
-  async getStorageStats() {
-    try {
-      const { data: sessions, error } = await supabase
-        .from(this.tableName)
-        .select('total_size, chunks_count')
-        .eq('client_id', this.clientId);
-
-      if (error) throw error;
-
-      const totalSize = sessions.reduce((sum, session) => sum + (session.total_size || 0), 0);
-      const totalChunks = sessions.reduce((sum, session) => sum + (session.chunks_count || 0), 0);
-      
-      return {
-        sessionsCount: sessions.length,
-        totalSize: totalSize,
-        totalSizeMB: Math.round(totalSize / 1024 / 1024 * 100) / 100,
-        totalChunks: totalChunks,
-        lastUpdated: new Date().toISOString()
-      };
-    } catch (error) {
-      console.error('Error getting storage stats:', error);
-      return {
-        sessionsCount: 0,
-        totalSize: 0,
-        totalSizeMB: 0,
-        totalChunks: 0,
-        lastUpdated: new Date().toISOString()
-      };
+      console.error('Error migrating session:', error);
+      return false;
     }
   }
 }
