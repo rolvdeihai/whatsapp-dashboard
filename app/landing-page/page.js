@@ -1,7 +1,8 @@
 // File: /app/landing-page/page.js
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { 
   Check, 
   MessageCircle, 
@@ -12,16 +13,74 @@ import {
   Clock,
   HelpCircle,
   ArrowRight,
-  Smartphone
+  Smartphone,
+  LogOut,
+  LayoutDashboard, // Changed from Dashboard to LayoutDashboard
+  Home
 } from 'lucide-react';
 
 export default function LandingPage() {
+  const router = useRouter();
   const [selectedPlan, setSelectedPlan] = useState('free');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [groups, setGroups] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userData, setUserData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Pricing plans with WhatsApp message-based pricing
+  // Check if user is logged in
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/api/user/profile', {
+          credentials: 'include'
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.user) {
+            setIsLoggedIn(true);
+            setUserData(data.user);
+          }
+        }
+      } catch (error) {
+        console.log('Not logged in or error:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      const authToken = localStorage.getItem('authToken');
+      
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('rememberedEmail');
+      setIsLoggedIn(false);
+      setUserData(null);
+      router.refresh();
+    } catch (error) {
+      console.error('Logout error:', error);
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('rememberedEmail');
+      setIsLoggedIn(false);
+      setUserData(null);
+    }
+  };
+
+  const handleDashboard = () => {
+    router.push('/dashboard');
+  };
+
+  // Pricing plans with PayPal subscription
   const pricingPlans = [
     {
       id: 'free',
@@ -36,7 +95,7 @@ export default function LandingPage() {
         'Dukungan email',
         'Masa percobaan 30 hari'
       ],
-      ctaText: 'Mulai Gratis',
+      ctaText: isLoggedIn ? 'Buka Dashboard' : 'Mulai Gratis',
       ctaColor: 'bg-gray-600 hover:bg-gray-700',
       popular: false
     },
@@ -54,103 +113,44 @@ export default function LandingPage() {
         'Analitik lengkap',
         'Integrasi API'
       ],
-      ctaText: 'Mulai Sekarang',
+      ctaText: isLoggedIn ? 'Upgrade Sekarang' : 'Daftar Sekarang',
       ctaColor: 'bg-green-600 hover:bg-green-700',
       popular: true
-    },
-    {
-      id: 'business',
-      name: 'Paket Bisnis',
-      price: 'Rp 899.000',
-      period: '/bulan',
-      description: 'Solusi lengkap untuk perusahaan',
-      features: [
-        '25,000 pesan WhatsApp/bulan',
-        'Grup tidak terbatas',
-        'Bot AI premium',
-        'Dukungan 24/7',
-        'Analitik tingkat lanjut',
-        'Custom integration',
-        'Manajemen multi-user'
-      ],
-      ctaText: 'Hubungi Tim',
-      ctaColor: 'bg-blue-600 hover:bg-blue-700',
-      popular: false
     }
   ];
 
-  // Payment methods available through Xendit
-  const paymentMethods = [
-    { name: 'QRIS', icon: 'qr' },
-    { name: 'DANA', icon: 'wallet' },
-    { name: 'OVO', icon: 'wallet' },
-    { name: 'ShopeePay', icon: 'wallet' },
-    { name: 'LinkAja', icon: 'wallet' },
-    { name: 'Kartu Kredit', icon: 'card' },
-    { name: 'Transfer Bank', icon: 'bank' },
-    { name: 'Alfamart/Indomaret', icon: 'store' }
-  ];
-
-  const handleGetStarted = async () => {
-    if (selectedPlan === 'free') {
-      // Direct to free trial signup
-      window.location.href = '/signup?plan=free';
-    } else {
-      // Process paid plan with Xendit
-      setIsProcessing(true);
-      
-      try {
-        // Prepare payment data
-        const paymentData = {
-          external_id: `whatsapp-bot-${Date.now()}`,
-          amount: selectedPlan === 'pro' ? 299000 : 899000,
-          description: `Paket ${selectedPlan === 'pro' ? 'Pro' : 'Bisnis'} - WhatsApp Bot`,
-          customer: {
-            given_names: 'Pelanggan',
-            email: 'customer@example.com',
-            mobile_number: phoneNumber
-          },
-          success_redirect_url: `${window.location.origin}/success`,
-          failure_redirect_url: `${window.location.origin}/pricing`,
-          currency: 'IDR',
-          items: [{
-            name: `Paket WhatsApp Bot ${selectedPlan === 'pro' ? 'Pro' : 'Bisnis'}`,
-            quantity: 1,
-            price: selectedPlan === 'pro' ? 299000 : 899000,
-            category: 'Software'
-          }],
-          metadata: {
-            phone_number: phoneNumber,
-            groups: groups.split(',').map(g => g.trim()),
-            plan: selectedPlan
-          }
-        };
-
-        // Call backend to create Xendit payment link
-        const response = await fetch('/api/create-payment', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(paymentData)
-        });
-
-        const data = await response.json();
-        
-        if (data.invoice_url) {
-          // Redirect to Xendit payment page
-          window.location.href = data.invoice_url;
-        } else {
-          throw new Error('Payment link creation failed');
-        }
-      } catch (error) {
-        console.error('Payment error:', error);
-        alert('Terjadi kesalahan saat memproses pembayaran. Silakan coba lagi.');
-      } finally {
-        setIsProcessing(false);
+  const handlePlanSelection = (planId) => {
+    setSelectedPlan(planId);
+    
+    if (isLoggedIn) {
+      if (planId === 'free') {
+        // Already on free plan, go to dashboard
+        router.push('/dashboard');
+      } else {
+        // Upgrade to pro plan - redirect to PayPal
+        window.location.href = 'https://www.paypal.com/webapps/billing/plans/subscribe?plan_id=P-84S4477372307922TNFYIXQQ';
       }
+    } else {
+      // Not logged in, redirect to signup
+      router.push(`/signup?plan=${planId}`);
     }
   };
+
+  const handleGetStarted = () => {
+    if (isLoggedIn) {
+      router.push('/dashboard');
+    } else {
+      router.push('/signup?plan=free');
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
@@ -165,21 +165,44 @@ export default function LandingPage() {
             <a href="#features" className="text-gray-600 hover:text-green-600">Fitur</a>
             <a href="#pricing" className="text-gray-600 hover:text-green-600">Harga</a>
             <a href="#faq" className="text-gray-600 hover:text-green-600">FAQ</a>
-            <a 
-              href="/admin" 
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
-            >
-              Login Admin
-            </a>
           </div>
-          <div className="flex items-center space-x-6">
-            <a href="/login" className="text-gray-600 hover:text-green-600">Login</a>
-            <a 
-              href="/signup" 
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
-            >
-              Sign Up Free
-            </a>
+          <div className="flex items-center space-x-4">
+            {isLoggedIn ? (
+              <>
+                <div className="flex items-center space-x-3">
+                  <div className="text-right">
+                    <p className="text-sm font-medium text-gray-700">{userData?.email}</p>
+                    <p className="text-xs text-gray-500">
+                      Plan: <span className="font-medium">{userData?.plan_id === 'free' ? 'Free Trial' : 'Pro'}</span>
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleDashboard}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    <LayoutDashboard className="h-4 w-4" />
+                    Dashboard
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    Logout
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <a href="/login" className="text-gray-600 hover:text-green-600">Login</a>
+                <a 
+                  href="/signup" 
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+                >
+                  Sign Up Free
+                </a>
+              </>
+            )}
           </div>
         </div>
       </nav>
@@ -195,27 +218,12 @@ export default function LandingPage() {
           mengirim notifikasi, dan mengelola grup secara otomatis - 24/7 tanpa henti.
         </p>
         
-        <div className="flex flex-col md:flex-row gap-4 max-w-2xl mx-auto mb-12">
-          <input
-            type="tel"
-            placeholder="Nomor WhatsApp Anda (contoh: +628123456789)"
-            className="flex-1 px-6 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-            value={phoneNumber}
-            onChange={(e) => setPhoneNumber(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Nama grup (pisahkan dengan koma)"
-            className="flex-1 px-6 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-            value={groups}
-            onChange={(e) => setGroups(e.target.value)}
-          />
+        <div className="max-w-md mx-auto mb-12">
           <button
             onClick={handleGetStarted}
-            disabled={isProcessing || !phoneNumber}
-            className="bg-green-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+            className="bg-green-600 text-white px-8 py-4 rounded-lg font-semibold text-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2 mx-auto"
           >
-            {isProcessing ? 'Memproses...' : 'Mulai Gratis'}
+            {isLoggedIn ? 'Buka Dashboard' : 'Mulai Gratis 30 Hari'}
             <ArrowRight className="h-5 w-5" />
           </button>
         </div>
@@ -272,10 +280,10 @@ export default function LandingPage() {
             <div className="bg-purple-100 w-12 h-12 rounded-lg flex items-center justify-center mb-6">
               <Smartphone className="h-6 w-6 text-purple-600" />
             </div>
-            <h3 className="text-xl font-semibold mb-4">Integrasi Mudah</h3>
+            <h3 className="text-xl font-semibold mb-4">Setup di Dashboard</h3>
             <p className="text-gray-600">
-              Cukup scan QR code dan pilih grup. Tidak perlu instalasi rumit 
-              atau konfigurasi teknis.
+              Setelah login, tambahkan grup WhatsApp Anda di dashboard. 
+              Kami akan otomatisasi grup Anda dalam 5 menit.
             </p>
           </div>
         </div>
@@ -285,176 +293,141 @@ export default function LandingPage() {
       <section id="pricing" className="container mx-auto px-6 py-16 bg-gray-50 rounded-2xl my-8">
         <h2 className="text-3xl font-bold text-center mb-4">Pilih Paket yang Tepat</h2>
         <p className="text-gray-600 text-center mb-12 max-w-2xl mx-auto">
-          Harga berdasarkan jumlah pesan WhatsApp yang dikirim. Mulai gratis, 
-          bayar hanya setelah puas dengan hasilnya.
+          {isLoggedIn 
+            ? `Anda sedang menggunakan paket ${userData?.plan_id === 'free' ? 'Gratis' : 'Pro'}. Upgrade untuk fitur lebih lengkap.`
+            : 'Mulai dengan 30 hari gratis, lalu berlangganan hanya jika puas dengan hasilnya.'}
         </p>
 
-        <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-          {pricingPlans.map((plan) => (
-            <div 
-              key={plan.id}
-              className={`bg-white rounded-xl shadow-lg border-2 p-8 relative transition-transform hover:scale-[1.02] ${
-                plan.popular 
-                  ? 'border-green-500 shadow-green-100 transform scale-105' 
-                  : 'border-gray-200'
-              }`}
-            >
-              {plan.popular && (
-                <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
-                  <span className="bg-green-600 text-white px-4 py-1 rounded-full text-sm font-semibold">
-                    PALING POPULER
-                  </span>
-                </div>
-              )}
-
-              <h3 className="text-2xl font-bold mb-2">{plan.name}</h3>
-              <div className="flex items-baseline mb-4">
-                <span className="text-4xl font-bold">{plan.price}</span>
-                <span className="text-gray-600 ml-2">{plan.period}</span>
-              </div>
-              <p className="text-gray-600 mb-6">{plan.description}</p>
-
-              <ul className="space-y-4 mb-8">
-                {plan.features.map((feature, index) => (
-                  <li key={index} className="flex items-start">
-                    <Check className="h-5 w-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                    <span>{feature}</span>
-                  </li>
-                ))}
-              </ul>
-
-              <button
-                onClick={() => {
-                  setSelectedPlan(plan.id);
-                  document.getElementById('setup-form')?.scrollIntoView({ behavior: 'smooth' });
-                }}
-                className={`w-full py-3 rounded-lg font-semibold text-white transition-colors ${plan.ctaColor}`}
+        <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+          {pricingPlans.map((plan) => {
+            const isCurrentPlan = isLoggedIn && userData?.plan_id === plan.id;
+            
+            return (
+              <div 
+                key={plan.id}
+                className={`bg-white rounded-xl shadow-lg border-2 p-8 relative transition-transform hover:scale-[1.02] ${
+                  plan.popular 
+                    ? 'border-green-500 shadow-green-100 transform scale-105' 
+                    : 'border-gray-200'
+                } ${isCurrentPlan ? 'ring-2 ring-green-300' : ''}`}
               >
-                {plan.ctaText}
-              </button>
-            </div>
-          ))}
+                {plan.popular && (
+                  <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
+                    <span className="bg-green-600 text-white px-4 py-1 rounded-full text-sm font-semibold">
+                      PALING POPULER
+                    </span>
+                  </div>
+                )}
+
+                {isCurrentPlan && (
+                  <div className="absolute -top-3 right-4">
+                    <span className="bg-blue-600 text-white px-4 py-1 rounded-full text-sm font-semibold">
+                      PLAN ANDA
+                    </span>
+                  </div>
+                )}
+
+                <h3 className="text-2xl font-bold mb-2">{plan.name}</h3>
+                <div className="flex items-baseline mb-4">
+                  <span className="text-4xl font-bold">{plan.price}</span>
+                  <span className="text-gray-600 ml-2">{plan.period}</span>
+                </div>
+                <p className="text-gray-600 mb-6">{plan.description}</p>
+
+                <ul className="space-y-4 mb-8">
+                  {plan.features.map((feature, index) => (
+                    <li key={index} className="flex items-start">
+                      <Check className="h-5 w-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
+                      <span>{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                <button
+                  onClick={() => handlePlanSelection(plan.id)}
+                  className={`w-full py-3 rounded-lg font-semibold text-white transition-colors ${plan.ctaColor} ${
+                    isCurrentPlan ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
+                  disabled={isCurrentPlan}
+                >
+                  {isCurrentPlan ? 'Plan Saat Ini' : plan.ctaText}
+                </button>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Payment Methods */}
+        {/* PayPal Information */}
         <div className="mt-16 text-center">
-          <h3 className="text-xl font-semibold mb-6">Dukungan Pembayaran Lengkap</h3>
-          <div className="flex flex-wrap justify-center gap-4">
-            {paymentMethods.map((method) => (
-              <div 
-                key={method.name} 
-                className="bg-white px-4 py-2 rounded-lg border border-gray-200 flex items-center gap-2"
-              >
-                <span className="text-gray-700">{method.name}</span>
-              </div>
-            ))}
+          <h3 className="text-xl font-semibold mb-6">Pembayaran Aman dengan PayPal</h3>
+          <div className="bg-white inline-flex px-6 py-3 rounded-lg border border-gray-200 mb-4">
+            <img 
+              src="https://www.paypalobjects.com/webstatic/mktg/logo/pp_cc_mark_37x23.jpg" 
+              alt="PayPal" 
+              className="h-8"
+            />
+            <span className="ml-3 text-gray-700 font-medium">Kartu Kredit/Debit</span>
           </div>
           <p className="text-gray-500 text-sm mt-4">
-            Didukung oleh Xendit • Transaksi aman & terenkripsi
+            Pembayaran aman & terenkripsi • Langganan bulanan • Bebas berhenti kapan saja
           </p>
+          {selectedPlan === 'pro' && !isLoggedIn && (
+            <a 
+              href="https://www.paypal.com/webapps/billing/plans/subscribe?plan_id=P-84S4477372307922TNFYIXQQ"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block mt-4 text-blue-600 hover:text-blue-800 text-sm"
+            >
+              Lihat detail paket di PayPal ↗
+            </a>
+          )}
         </div>
       </section>
 
-      {/* Setup Form */}
-      <section id="setup-form" className="container mx-auto px-6 py-16">
-        <div className="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-8">
-          <h2 className="text-2xl font-bold mb-6 text-center">Siap Menggunakan Bot?</h2>
+      {/* How It Works Section */}
+      <section className="container mx-auto px-6 py-16">
+        <h2 className="text-3xl font-bold text-center mb-12">Cara Kerja</h2>
+        
+        <div className="max-w-4xl mx-auto">
+          <div className="grid md:grid-cols-3 gap-8">
+            <div className="text-center">
+              <div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl font-bold text-green-600">1</span>
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Daftar Gratis</h3>
+              <p className="text-gray-600">
+                Buat akun dan dapatkan 30 hari gratis dengan 100 pesan WhatsApp.
+              </p>
+            </div>
+            
+            <div className="text-center">
+              <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl font-bold text-blue-600">2</span>
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Setup di Dashboard</h3>
+              <p className="text-gray-600">
+                Login ke dashboard dan tambahkan grup WhatsApp Anda dengan link invite.
+              </p>
+            </div>
+            
+            <div className="text-center">
+              <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl font-bold text-purple-600">3</span>
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Bot Aktif Otomatis</h3>
+              <p className="text-gray-600">
+                Bot akan otomatis join grup dan mulai bekerja dalam 5 menit.
+              </p>
+            </div>
+          </div>
           
-          <div className="space-y-6">
-            <div>
-              <label className="block text-gray-700 mb-2">Paket yang Dipilih</label>
-              <div className="flex flex-wrap gap-4">
-                {pricingPlans.map((plan) => (
-                  <button
-                    key={plan.id}
-                    onClick={() => setSelectedPlan(plan.id)}
-                    className={`px-6 py-3 rounded-lg border-2 transition-colors ${
-                      selectedPlan === plan.id
-                        ? 'border-green-600 bg-green-50 text-green-700'
-                        : 'border-gray-300 hover:border-gray-400'
-                    }`}
-                  >
-                    {plan.name} • {plan.price}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-gray-700 mb-2">
-                  Nomor WhatsApp Anda <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="tel"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="+628123456789"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-gray-700 mb-2">
-                  Nama Grup WhatsApp <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={groups}
-                  onChange={(e) => setGroups(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="Contoh: Grup Customer, Grup Internal, dll"
-                  required
-                />
-                <p className="text-sm text-gray-500 mt-2">
-                  Pisahkan dengan koma jika lebih dari satu grup
-                </p>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-gray-700 mb-2">
-                Pilih Metode Pembayaran
-              </label>
-              <select className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
-                <option value="">Pilih metode pembayaran...</option>
-                <option value="qris">QRIS (Semua E-Wallet)</option>
-                <option value="dana">DANA</option>
-                <option value="ovo">OVO</option>
-                <option value="cc">Kartu Kredit/Debit</option>
-                <option value="va">Transfer Bank (Virtual Account)</option>
-              </select>
-            </div>
-
+          <div className="mt-12 text-center">
             <button
               onClick={handleGetStarted}
-              disabled={isProcessing || !phoneNumber || !groups}
-              className="w-full bg-green-600 text-white py-4 rounded-lg font-semibold text-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+              className="bg-green-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors"
             >
-              {isProcessing ? (
-                <>
-                  <Clock className="h-5 w-5 animate-spin" />
-                  Memproses Pembayaran...
-                </>
-              ) : selectedPlan === 'free' ? (
-                'Aktifkan Akun Gratis'
-              ) : (
-                'Lanjut ke Pembayaran'
-              )}
+              {isLoggedIn ? 'Lanjut ke Dashboard' : 'Mulai Sekarang'}
             </button>
-
-            <p className="text-center text-gray-500 text-sm">
-              Dengan melanjutkan, Anda menyetujui{' '}
-              <a href="/terms" className="text-green-600 hover:underline">
-                Syarat & Ketentuan
-              </a>{' '}
-              dan{' '}
-              <a href="/privacy" className="text-green-600 hover:underline">
-                Kebijakan Privasi
-              </a>{' '}
-              kami
-            </p>
           </div>
         </div>
       </section>
@@ -467,36 +440,38 @@ export default function LandingPage() {
           <div className="bg-white p-6 rounded-lg shadow border border-gray-100">
             <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
               <HelpCircle className="h-5 w-5 text-green-600" />
-              Bagaimana cara kerja bot WhatsApp ini?
+              Bagaimana cara setup bot setelah mendaftar?
             </h3>
             <p className="text-gray-600">
-              Setelah registrasi dan pembayaran, kami akan mengirimkan nomor WhatsApp khusus 
-              untuk bot Anda. Anda cukup mengundang nomor ini ke grup yang ingin diotomatisasi, 
-              dan bot akan segera aktif dengan konfigurasi default atau kustom sesuai kebutuhan Anda.
+              Setelah login, Anda akan masuk ke Dashboard. Di Dashboard Anda bisa:
+              1. Copy link invite grup WhatsApp Anda
+              2. Tambahkan link tersebut di form "Add WhatsApp Group"
+              3. Bot akan otomatis join grup dalam 5 menit
+              4. Atur respon dan konfigurasi bot sesuai kebutuhan Anda
             </p>
           </div>
 
           <div className="bg-white p-6 rounded-lg shadow border border-gray-100">
             <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
               <HelpCircle className="h-5 w-5 text-green-600" />
-              Apakah ada biaya tersembunyi?
+              Apakah saya bisa upgrade dari paket gratis ke pro?
             </h3>
             <p className="text-gray-600">
-              Tidak ada biaya tersembunyi. Hanya ada biaya transaksi per transaksi yang berhasil[citation:5]. 
-              Anda hanya membayar sesuai paket yang dipilih. Biaya WhatsApp Business API 
-              sudah termasuk dalam paket harga kami[citation:3].
+              Ya, Anda bisa upgrade kapan saja. Login ke Dashboard Anda, dan klik tombol 
+              "Upgrade Plan" di sidebar atau klik paket Pro di halaman ini jika sudah login. 
+              Anda akan diarahkan ke PayPal untuk proses pembayaran.
             </p>
           </div>
 
           <div className="bg-white p-6 rounded-lg shadow border border-gray-100">
             <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
               <HelpCircle className="h-5 w-5 text-green-600" />
-              Berapa lama proses aktivasi setelah pembayaran?
+              Bagaimana jika saya sudah memiliki bot di dashboard?
             </h3>
             <p className="text-gray-600">
-              Aktivasi instan! Setelah pembayaran berhasil diverifikasi melalui Xendit, 
-              Anda akan langsung menerima detail akses bot dalam waktu 5-10 menit. 
-              Proses pembayaran menggunakan webhook real-time untuk update status otomatis[citation:2].
+              Jika Anda sudah memiliki akun dan bot aktif, cukup login dan Anda akan langsung 
+              diarahkan ke Dashboard untuk mengelola grup yang sudah ada atau menambahkan grup baru.
+              Semua konfigurasi dan history Anda tetap tersimpan.
             </p>
           </div>
         </div>
@@ -517,6 +492,9 @@ export default function LandingPage() {
             </div>
             
             <div className="flex flex-wrap gap-6">
+              <a href="/dashboard" className="text-gray-400 hover:text-white">
+                Dashboard
+              </a>
               <a href="/admin" className="text-gray-400 hover:text-white">
                 Login Admin
               </a>
@@ -536,6 +514,7 @@ export default function LandingPage() {
             <p>© {new Date().getFullYear()} WhatsAppBot.id. All rights reserved.</p>
             <p className="mt-2 text-sm">
               WhatsApp adalah merek dagang terdaftar dari Meta Platforms, Inc.
+              Pembayaran diproses melalui PayPal.
             </p>
           </div>
         </div>

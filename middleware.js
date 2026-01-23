@@ -1,3 +1,4 @@
+// middleware.js
 import { NextResponse } from 'next/server'
 import { getCurrentUser, isAdmin } from '@/lib/auth'
 
@@ -36,10 +37,19 @@ export async function middleware(request) {
       return NextResponse.next()
     }
     
-    // Redirect to login
+    // Create a redirect response
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('redirect', pathname)
-    return NextResponse.redirect(loginUrl)
+    
+    // Clear any existing auth cookies in the response
+    const response = NextResponse.redirect(loginUrl)
+    
+    // Clear session cookies
+    response.cookies.delete('session_token')
+    response.cookies.delete('user_id')
+    response.cookies.delete('user_email')
+    
+    return response
   }
   
   // Check admin routes

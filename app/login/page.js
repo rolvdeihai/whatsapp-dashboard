@@ -15,8 +15,10 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [autoLoginAttempted, setAutoLoginAttempted] = useState(false)
 
-  // Check for stored credentials on mount
+  // Check for stored credentials on mount - SIMPLIFIED
+  // In your login page useEffect
   useEffect(() => {
     const storedEmail = localStorage.getItem('rememberedEmail')
     const storedToken = localStorage.getItem('authToken')
@@ -25,27 +27,72 @@ export default function Login() {
       setFormData(prev => ({ ...prev, email: storedEmail }))
     }
     
-    // Try to auto-login with stored token
+    // Only attempt auto-login if we have both email and token
     if (storedToken) {
-      checkStoredToken(storedToken)
+      attemptAutoLogin(storedToken)
+    } else {
+      setAutoLoginAttempted(true)
     }
   }, [])
 
-  const checkStoredToken = async (token) => {
+  const attemptAutoLogin = async (token) => {
     try {
-      const response = await fetch('/api/auth/check-token', {
-        headers: {
-          'Authorization': `Bearer ${token}`
+      const response = await fetch('/api/auth/auto-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        // Update stored token with new one
+        if (data.jwtToken) {
+          localStorage.setItem('authToken', data.jwtToken)
         }
+        router.push('/dashboard')
+      } else {
+        // Auto-login failed - clear invalid token
+        if (data.shouldClear) {
+          clearStoredCredentials()
+        }
+      }
+    } catch (error) {
+      console.error('Auto-login failed:', error)
+      clearStoredCredentials()
+    } finally {
+      setAutoLoginAttempted(true)
+    }
+  }
+
+  const checkExistingSession = async () => {
+    try {
+      const response = await fetch('/api/auth/check-session', {
+        credentials: 'include'
       })
       
       if (response.ok) {
-        router.push('/dashboard')
+        const data = await response.json()
+        if (data.valid) {
+          router.push('/dashboard')
+        } else {
+          // Session is invalid - clear stored credentials
+          clearStoredCredentials()
+        }
       }
     } catch (error) {
-      // Token is invalid, remove it
-      localStorage.removeItem('authToken')
+      // Silently fail - user will need to log in manually
+      console.log('No existing session or server error')
+    } finally {
+      setAutoLoginAttempted(true)
     }
+  }
+
+  const clearStoredCredentials = () => {
+    localStorage.removeItem('authToken')
+    localStorage.removeItem('rememberedEmail')
+    // Also clear any other auth-related items
+    localStorage.removeItem('userData')
   }
 
   const handleChange = (e) => {
@@ -82,8 +129,7 @@ export default function Login() {
           localStorage.setItem('authToken', data.jwtToken)
         }
       } else {
-        localStorage.removeItem('rememberedEmail')
-        localStorage.removeItem('authToken')
+        clearStoredCredentials()
       }
 
       // Redirect to dashboard

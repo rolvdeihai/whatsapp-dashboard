@@ -1,5 +1,4 @@
-// app/dashboard/page.js - UPDATED
-
+// app/dashboard/page.js - UPDATED with better session handling
 'use client'
 
 import { useState, useEffect } from 'react'
@@ -12,6 +11,7 @@ export default function Dashboard() {
   const [user, setUser] = useState(null)
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(true)
+  const [sessionChecked, setSessionChecked] = useState(false)
   
   // Form states
   const [groupInviteUrl, setGroupInviteUrl] = useState('')
@@ -20,8 +20,36 @@ export default function Dashboard() {
   const [isSaving, setIsSaving] = useState(false)
 
   useEffect(() => {
-    loadUserData()
+    checkSessionAndLoadData()
   }, [])
+
+  // Check session before loading data
+  const checkSessionAndLoadData = async () => {
+    try {
+      // First, check if session is valid
+      const sessionResponse = await fetch('/api/auth/check-session', {
+        credentials: 'include'
+      })
+      
+      const sessionData = await sessionResponse.json()
+      
+      if (!sessionData.valid) {
+        // Session is invalid - clear localStorage and redirect
+        clearLocalStorage()
+        router.push('/login?error=session_expired')
+        return
+      }
+      
+      // Session is valid, load user data
+      await loadUserData()
+    } catch (error) {
+      console.error('Session check failed:', error)
+      clearLocalStorage()
+      router.push('/login?error=server_error')
+    } finally {
+      setSessionChecked(true)
+    }
+  }
 
   const loadUserData = async () => {
     try {
@@ -33,6 +61,8 @@ export default function Dashboard() {
       console.log('Profile response status:', response.status)
       
       if (response.status === 401) {
+        // Clear everything and redirect
+        clearLocalStorage()
         router.push('/login?error=session_expired')
         return
       }
@@ -42,6 +72,7 @@ export default function Dashboard() {
       
       if (!data.user) {
         console.error('No user data in response')
+        clearLocalStorage()
         router.push('/login')
         return
       }
@@ -52,36 +83,42 @@ export default function Dashboard() {
       setActiveGroups(data.active_groups || [])
     } catch (error) {
       console.error('Failed to load user data:', error)
+      clearLocalStorage()
       router.push('/login?error=server_error')
     } finally {
       setLoading(false)
     }
   }
 
+  // Clear all localStorage credentials
+  const clearLocalStorage = () => {
+    localStorage.removeItem('authToken')
+    localStorage.removeItem('rememberedEmail')
+    localStorage.removeItem('userData')
+  }
+
   const handleLogout = async () => {
     try {
-      const authToken = localStorage.getItem('authToken')
-      
+      // Call logout API
       await fetch('/api/auth/logout', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json'
-        }
+        credentials: 'include'
       })
       
-      localStorage.removeItem('authToken')
-      localStorage.removeItem('rememberedEmail')
+      // Clear localStorage
+      clearLocalStorage()
+      
+      // Redirect to login
       router.push('/login')
       router.refresh()
     } catch (error) {
       console.error('Logout error:', error)
-      localStorage.removeItem('authToken')
-      localStorage.removeItem('rememberedEmail')
+      clearLocalStorage()
       router.push('/login')
     }
   }
 
+  // Rest of your component remains the same...
   const goToAdminDashboard = () => {
     router.push('/admin')
   }
@@ -94,7 +131,6 @@ export default function Dashboard() {
     router.push('/admin/users')
   }
 
-  // In app/dashboard/page.js - Update handleAddGroup function
   const handleAddGroup = async (e) => {
     e.preventDefault()
     if (!groupInviteUrl.trim() || !groupName.trim()) {
@@ -125,24 +161,20 @@ export default function Dashboard() {
       console.log('Add group response data:', data)
       
       if (data.success) {
-        // Group was created in database
         setGroups(prev => [...prev, data.group])
         setGroupInviteUrl('')
         setGroupName('')
         
-        // Show appropriate message based on webhook result
         if (data.warning) {
           alert(data.warning + ' ' + data.message)
         } else {
           alert(data.message || 'Group added successfully! The bot will join shortly.')
         }
         
-        // Reload user data to update active groups count
         loadUserData()
       } else {
-        // Show specific error message
         if (data.error.includes('expired') || data.error.includes('invalid')) {
-          alert(`Error: ${data.error}\n\nPlease generate a new invite link by:\n1. Opening the WhatsApp group\n2. Tap on group name\n3. Tap "Invite to group"\n4. Tap "Reset link"\n5. Copy the new link`)
+          alert(`Error: ${data.error}\n\nPlease generate a new invite link.`)
         } else {
           alert(data.error || 'Failed to add group')
         }
@@ -171,8 +203,6 @@ export default function Dashboard() {
         setGroups(prev => prev.filter(g => g.id !== groupId));
         setActiveGroups(prev => prev.filter(id => id !== groupId));
         alert(data.message || 'Group removed successfully!');
-        
-        // Reload user data to update active groups count
         loadUserData()
       } else {
         alert(data.error || 'Failed to remove group');
@@ -198,21 +228,18 @@ export default function Dashboard() {
       const data = await response.json();
       
       if (data.success) {
-        // Update local state
         setGroups(prev => prev.map(group => 
           group.id === groupId 
             ? { ...group, is_active: newActiveState }
             : group
         ));
         
-        // Update active groups list
         if (newActiveState) {
           setActiveGroups(prev => [...prev, groupId]);
         } else {
           setActiveGroups(prev => prev.filter(id => id !== groupId));
         }
         
-        // Reload user data to update active groups count
         loadUserData()
       } else {
         alert(data.error || 'Failed to update group');
@@ -223,7 +250,7 @@ export default function Dashboard() {
     }
   };
 
-  if (loading) {
+  if (!sessionChecked || loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
